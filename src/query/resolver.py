@@ -1,0 +1,495 @@
+"""
+resolver.py — Phase 3: Structured Query Executor
+
+Executes StructuredQuery against match_facts.json and returns StructuredResult.
+Handles numeric, superlative, slice, and aggregation queries.
+
+HARD RULE: never silently drop a requested filter — if a filter can't be
+honored, the result must say so explicitly (dropped_filters list).
+"""
+
+from __future__ import annotations
+
+import json
+from collections import defaultdict
+from pathlib import Path
+from typing import Any
+
+from src.query.query_schema import StructuredQuery, StructuredResult, Filter
+from src.query.vocab import (
+    ALL_PLAYER_METRICS, PLAYER_DIMENSIONS, MATCH_DIMENSIONS,
+    resolve_metric, resolve_aggregation, resolve_stage,
+    PERCENTAGE_METRICS,
+)
+
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+
+DATA_PATH = Path("output/match_facts.json")
+
+# Cache for loaded data (invalidated when file changes)
+_data_cache: dict | None = None
+_data_cache_mtime: float | None = None
+
+
+def _load_data(path: Path = DATA_PATH) -> dict:
+    """Load match_facts.json with caching (invalidates on file change)."""
+    global _data_cache, _data_cache_mtime
+
+    if path.exists():
+        mtime = path.stat().st_mtime
+        if _data_cache is not None and _data_cache_mtime == mtime:
+            return _data_cache
+        _data_cache = json.loads(path.read_text(encoding="utf-8"))
+        _data_cache_mtime = mtime
+        return _data_cache
+
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# Filter application
+# ---------------------------------------------------------------------------
+
+
+def _apply_filter(records: list[dict], f: Filter) -> list[dict]:
+    """Apply a single filter to a list of records."""
+    dim = f.dimension
+    op = f.operator
+    val = f.value
+
+    filtered = []
+    for record in records:
+        record_val = record.get(dim)
+        if record_val is None:
+            continue
+
+        if op == "eq":
+            # Case-insensitive string comparison
+            if isinstance(record_val, str) and isinstance(val, str):
+                if record_val.lower() == val.lower():
+                    filtered.append(record)
+            elif record_val == val:
+                filtered.append(record)
+        elif op == "neq":
+            if isinstance(record_val, str) and isinstance(val, str):
+                if record_val.lower() != val.lower():
+                    filtered.append(record)
+            elif record_val != val:
+                filtered.append(record)
+        elif op == "gt":
+            if record_val > val:
+                filtered.append(record)
+        elif op == "lt":
+            if record_val < val:
+                filtered.append(record)
+        elif op == "gte":
+            if record_val >= val:
+                filtered.append(record)
+        elif op == "lte":
+            if record_val <= val:
+                filtered.append(record)
+        elif op == "in":
+            if isinstance(val, list):
+                if isinstance(record_val, str):
+                    if record_val.lower() in [v.lower() for v in val]:
+                        filtered.append(record)
+                elif record_val in val:
+                    filtered.append(record)
+
+    return filtered
+
+
+def _validate_filters(filters: list[Filter], entity: str) -> tuple[list[Filter], list[str]]:
+    """
+    Validate filters against known dimensions.
+    Returns (valid_filters, dropped_filter_names).
+    """
+    valid_dims = PLAYER_DIMENSIONS if entity == "player" else MATCH_DIMENSIONS
+    valid = []
+    dropped = []
+
+    for f in filters:
+        if f.dimension in valid_dims or f.dimension in {"team_name", "match_id", "stage", "is_knockout"}:
+            valid.append(f)
+        else:
+            dropped.append(f.dimension)
+
+    return valid, dropped
+
+
+# ---------------------------------------------------------------------------
+# Aggregation
+# ---------------------------------------------------------------------------
+
+
+def _aggregate(records: list[dict], metric: str, aggregation: str) -> float | int | None:
+    """Perform aggregation on a list of records."""
+    if not records:
+        return None
+
+    values = [r.get(metric) for r in records if r.get(metric) is not None]
+    if not values:
+        return None
+
+    if aggregation == "sum":
+        return sum(values)
+    elif aggregation in ("avg", "mean"):
+        return sum(values) / len(values)
+    elif aggregation == "max":
+        return max(values)
+    elif aggregation == "min":
+        return min(values)
+    elif aggregation == "count":
+        return len(values)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Entity resolution
+# ---------------------------------------------------------------------------
+
+
+def _resolve_player_name(name: str, data: dict) -> str | None:
+    """
+    Resolve a player name (possibly partial) to the canonical name.
+    Case-insensitive matching, handles common variations and accents.
+    """
+    if not name:
+        return None
+
+    name_lower = name.lower().strip()
+
+    # Build name lookup from player_match_facts
+    name_counts: dict[str, int] = defaultdict(int)
+    for pmf in data["player_match_facts"]:
+        pname = pmf["player_name"]
+        name_counts[pname] += 1
+
+    # Exact match (case-insensitive)
+    for pname in name_counts:
+        if pname.lower() == name_lower:
+            return pname
+
+    # Partial match (last name or any word)
+    for pname in name_counts:
+        parts = pname.lower().split()
+        if name_lower in parts:
+            return pname
+
+    # Substring match (for partial names like "Mbappe" -> "Mbappé")
+    for pname in name_counts:
+        # Remove accents for comparison
+        import unicodedata
+        pname_normalized = unicodedata.normalize('NFD', pname.lower())
+        name_normalized = unicodedata.normalize('NFD', name_lower)
+        # Remove combining characters (accents)
+        pname_ascii = ''.join(c for c in pname_normalized if unicodedata.category(c) != 'Mn')
+        name_ascii = ''.join(c for c in name_normalized if unicodedata.category(c) != 'Mn')
+        if name_ascii in pname_ascii:
+            return pname
+
+    # Original substring match
+    for pname in name_counts:
+        if name_lower in pname.lower():
+            return pname
+
+    return None
+
+
+def _resolve_team_name(name: str, data: dict) -> str | None:
+    """Resolve a team name (possibly partial) to the canonical name."""
+    if not name:
+        return None
+
+    name_lower = name.lower().strip()
+
+    # Build name lookup
+    team_names = set()
+    for mf in data["match_facts"]:
+        team_names.add(mf["home_team"])
+        team_names.add(mf["away_team"])
+
+    # Exact match (case-insensitive)
+    for tname in team_names:
+        if tname.lower() == name_lower:
+            return tname
+
+    # Partial match
+    for tname in team_names:
+        if name_lower in tname.lower():
+            return tname
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Resolver
+# ---------------------------------------------------------------------------
+
+
+def resolve(query: StructuredQuery, data: dict | None = None) -> StructuredResult:
+    """
+    Execute a StructuredQuery against match_facts.json.
+
+    Returns a StructuredResult with status:
+        "resolved" — all filters honored
+        "partial"  — some filters dropped
+        "empty"    — no matching records
+
+    Results are cached and automatically invalidated when match_facts.json changes.
+    """
+    from src.cache import get_cached_structured_result, set_cached_structured_result
+
+    # Generate cache key from query
+    cache_key = f"{query.entity}:{query.entity_name}:{query.metric}:{query.aggregation}:{query.intent}:{query.limit}"
+
+    # Check cache
+    cached = get_cached_structured_result(cache_key)
+    if cached is not None:
+        return cached
+
+    if data is None:
+        data = _load_data()
+
+    # Validate filters
+    valid_filters, dropped = _validate_filters(query.filters, query.entity)
+
+    # Resolve entity name if provided
+    entity_name = query.entity_name
+    if entity_name:
+        if query.entity == "player":
+            resolved = _resolve_player_name(entity_name, data)
+            if resolved:
+                entity_name = resolved
+            else:
+                return StructuredResult(
+                    status="empty",
+                    query=query,
+                    explanation=f"No player found matching '{query.entity_name}'.",
+                )
+        elif query.entity == "team":
+            resolved = _resolve_team_name(entity_name, data)
+            if resolved:
+                entity_name = resolved
+            else:
+                return StructuredResult(
+                    status="empty",
+                    query=query,
+                    explanation=f"No team found matching '{query.entity_name}'.",
+                )
+
+    # Select records based on entity type
+    if query.entity == "player":
+        records = data["player_match_facts"]
+    elif query.entity == "match":
+        records = data["match_facts"]
+    elif query.entity == "team":
+        records = data["team_match_facts"]
+    else:
+        return StructuredResult(
+            status="empty",
+            query=query,
+            explanation=f"Unknown entity type: {query.entity}",
+        )
+
+    # Apply entity name filter
+    if entity_name:
+        if query.entity == "player":
+            records = [r for r in records if r.get("player_name", "").lower() == entity_name.lower()]
+        elif query.entity == "team":
+            records = [r for r in records if r.get("team_name", "").lower() == entity_name.lower()]
+
+    # Apply additional filters
+    for f in valid_filters:
+        # Handle stage synonyms
+        if f.dimension == "stage" and isinstance(f.value, str):
+            resolved_stage = resolve_stage(f.value)
+            if resolved_stage:
+                f = Filter(f.dimension, f.operator, resolved_stage)
+        records = _apply_filter(records, f)
+
+    # Handle "knockout" special filter
+    for f in valid_filters:
+        if f.dimension == "stage" and f.value is None:
+            # This means "knockout" — filter is_knockout=True
+            records = [r for r in records if r.get("is_knockout", False)]
+
+    if not records:
+        status = "partial" if dropped else "empty"
+        return StructuredResult(
+            status=status,
+            query=query,
+            data=[],
+            aggregated_value=None,
+            dropped_filters=dropped,
+            explanation=f"No records found matching the query criteria.",
+        )
+
+    # Perform aggregation
+    metric = resolve_metric(query.metric)
+    if metric is None:
+        return StructuredResult(
+            status="empty",
+            query=query,
+            explanation=f"Unknown metric: {query.metric}",
+        )
+
+    agg = resolve_aggregation(query.aggregation)
+    if agg is None:
+        agg = "sum"
+
+    # For superlatives, aggregate by entity first, then sort
+    if query.intent == "superlative" and query.limit:
+        # Group by player/team and aggregate
+        entity_groups: dict[str, list[dict]] = defaultdict(list)
+        for r in records:
+            key = r.get("player_name") or r.get("team_name") or str(r.get("match_id"))
+            entity_groups[key].append(r)
+
+        # Build aggregated records
+        # IMPORTANT: Use "sum" for cumulative metrics (goals, assists, xG),
+        # but "avg" for percentage/average metrics (possession_share, pass_completion_pct)
+        # The query's aggregation (e.g., "max") is for ranking, not per-entity aggregation
+        from src.query.vocab import PERCENTAGE_METRICS
+        per_entity_agg = "avg" if metric in PERCENTAGE_METRICS else "sum"
+
+        agg_records = []
+        for key, group in entity_groups.items():
+            agg_val = _aggregate(group, metric, per_entity_agg)
+            if agg_val is not None:
+                # Use the first record as base, override the metric with aggregated value
+                base = dict(group[0])
+                base[metric] = agg_val
+                base["_agg_count"] = len(group)
+                agg_records.append(base)
+
+        # Sort by aggregated value
+        sorted_records = sorted(agg_records, key=lambda r: r.get(metric, 0) or 0,
+                                reverse=(query.sort_order == "desc"))
+        result_data = sorted_records[:query.limit]
+        agg_value = result_data[0].get(metric) if result_data else None
+    else:
+        agg_value = _aggregate(records, metric, agg)
+        result_data = records
+
+    # Build explanation
+    if entity_name:
+        if agg_value is not None:
+            if agg in ("avg", "mean"):
+                explanation = f"{entity_name}'s average {metric} is {_format_value(agg_value, metric)}."
+            elif agg == "sum":
+                explanation = f"{entity_name}'s total {metric} is {_format_value(agg_value, metric)}."
+            elif agg == "max":
+                explanation = f"{entity_name}'s highest {metric} is {_format_value(agg_value, metric)}."
+            elif agg == "min":
+                explanation = f"{entity_name}'s lowest {metric} is {_format_value(agg_value, metric)}."
+            else:
+                explanation = f"{entity_name}'s {metric} ({agg}) is {_format_value(agg_value, metric)}."
+        else:
+            explanation = f"No {metric} data available for {entity_name}."
+    else:
+        if query.intent == "superlative" and result_data:
+            top = result_data[0]
+            name = top.get("player_name") or top.get("team_name") or str(top.get("match_id"))
+            explanation = f"The top {metric} is {_format_value(top.get(metric, 0), metric)} by {name}."
+        elif agg_value is not None:
+            explanation = f"The {agg} {metric} across all matching records is {_format_value(agg_value, metric)}."
+        else:
+            explanation = f"No {metric} data available."
+
+    status = "partial" if dropped else "resolved"
+
+    result = StructuredResult(
+        status=status,
+        query=query,
+        data=[r for r in result_data],
+        aggregated_value=agg_value,
+        dropped_filters=dropped,
+        explanation=explanation,
+    )
+
+    # Cache the result (auto-invalidates when data changes)
+    set_cached_structured_result(cache_key, result)
+
+    return result
+
+
+def _format_value(value: float | int | None, metric: str) -> str:
+    """Format a metric value for display."""
+    if value is None:
+        return "N/A"
+    if metric in PERCENTAGE_METRICS:
+        return f"{value:.1f}%"
+    if isinstance(value, float):
+        if value == int(value):
+            return str(int(value))
+        return f"{value:.2f}"
+    return str(value)
+
+
+# ---------------------------------------------------------------------------
+# Convenience
+# ---------------------------------------------------------------------------
+
+
+def resolve_from_text(query_text: str) -> StructuredResult:
+    """
+    Attempt to resolve a natural language query using structured data.
+    This is a simple pattern-matching approach — the router (Phase 5) will
+    use a more sophisticated parser.
+    """
+    data = _load_data()
+    query_text_lower = query_text.lower()
+
+    # Simple pattern: "how many <metric> did <player> score/have"
+    import re
+
+    # Pattern: <player> <metric>
+    player_metric_pattern = re.compile(
+        r"(?:how many|what is|what's|what are)\s+(\w+)\s+(?:did|does|has|have)\s+(.+?)(?:\s+score|\s+have|\s+get|\?)?",
+        re.IGNORECASE
+    )
+    match = player_metric_pattern.search(query_text)
+    if match:
+        metric_raw, player_raw = match.groups()
+        from vocab import METRIC_SYNONYMS
+        metric = METRIC_SYNONYMS.get(metric_raw.lower(), metric_raw.lower())
+        player = _resolve_player_name(player_raw.strip(), data)
+        if player and metric:
+            q = StructuredQuery(
+                intent="numeric",
+                entity="player",
+                metric=metric,
+                aggregation="sum",
+                entity_name=player,
+            )
+            return resolve(q, data)
+
+    # Pattern: who <aggregation> <metric>
+    who_pattern = re.compile(
+        r"who\s+(has the|had the|scored the|got the)?\s*(most|highest|best|least|lowest|fewest)\s+(\w+)",
+        re.IGNORECASE
+    )
+    match = who_pattern.search(query_text)
+    if match:
+        _, agg_raw, metric_raw = match.groups()
+        from vocab import METRIC_SYNONYMS, AGGREGATION_SYNONYMS
+        metric = METRIC_SYNONYMS.get(metric_raw.lower(), metric_raw.lower())
+        agg = AGGREGATION_SYNONYMS.get(agg_raw.lower(), "max")
+        q = StructuredQuery(
+            intent="superlative",
+            entity="player",
+            metric=metric,
+            aggregation=agg,
+            limit=1,
+        )
+        return resolve(q, data)
+
+    return StructuredResult(
+        status="empty",
+        query=StructuredQuery(intent="unknown", entity="unknown", metric="unknown"),
+        explanation="Could not parse the query into a structured form.",
+    )

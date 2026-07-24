@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment / secrets
+.env
+.env.*
+secrets.toml
+.streamlit/secrets.toml
+
+# Generated artifacts (rebuildable)
+output/
+chroma_db/
+embeddings/
+indices/
+processed_documents.json
+chunks.json
+documents.json
+match_facts.json
+
+# Raw data (download separately)
+open-data-master/
+open-data-master.zip
+
+# Model cache
+.cache/
+models/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+
+# IDE settings
+.vscode/
+.idea/
+*.iml
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Streamlit
+.streamlit/
