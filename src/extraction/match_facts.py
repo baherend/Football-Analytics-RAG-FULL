@@ -107,6 +107,10 @@ class PlayerMatchFacts:
     pressures: int = 0
     final_third_passes: int = 0
 
+    # Per-period breakdown (enables period-sliceable queries)
+    # Key: period number (1-4) as string, Value: metric block
+    by_period: dict = field(default_factory=dict)
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -579,6 +583,8 @@ def _compute_player_stats(events: list[dict], minutes: dict,
     Build the metric block for every player with minutes > 0.
     All metrics use only periods 1-4 (see in_play).
     Identical logic to 01_documents.py compute_player_stats.
+
+    Enhanced with per-period breakdowns (by_period) for period-sliceable queries.
     """
     blank = {
         "shots": 0, "xg": 0.0, "goals": 0, "assists": 0,
@@ -590,6 +596,23 @@ def _compute_player_stats(events: list[dict], minutes: dict,
         "carries": 0, "carry_distance": 0.0,
         "pressures": 0, "final_third_passes": 0,
     }
+
+    # Per-period metric keys (the 17 event-level stored counts)
+    PER_PERIOD_KEYS = [
+        "shots", "xg", "goals", "assists",
+        "passes_attempted", "passes_completed",
+        "passes_under_pressure", "passes_under_pressure_completed",
+        "shots_inside_box", "shots_outside_box",
+        "successful_tackles", "successful_interceptions",
+        "clearances", "ball_losses",
+        "carries", "carry_distance",
+        "pressures", "final_third_passes",
+    ]
+
+    def blank_period():
+        return {k: 0 if k not in ("xg", "carry_distance") else 0.0
+                for k in PER_PERIOD_KEYS}
+
     stats: dict[tuple[str, str], dict] = {}
 
     def slot(event):
@@ -598,68 +621,81 @@ def _compute_player_stats(events: list[dict], minutes: dict,
         key = (team, player)
         if key not in stats:
             stats[key] = dict(blank, player_id=event["player"]["id"],
-                              team_id=event["team"]["id"])
+                              team_id=event["team"]["id"],
+                              by_period={})
         return stats[key]
 
-    for event in events:
-        if not in_play(event) or "player" not in event:
-            continue
+    def accumulate(block, event):
+        """Add one event's contribution to a metric block."""
         etype = event["type"]["name"]
 
         if etype == "Shot":
             shot = event["shot"]
-            row = slot(event)
-            row["shots"] += 1
-            row["xg"] += shot.get("statsbomb_xg", 0.0)
+            block["shots"] += 1
+            block["xg"] += shot.get("statsbomb_xg", 0.0)
             if shot["outcome"]["name"] == "Goal":
-                row["goals"] += 1
+                block["goals"] += 1
             if shot_inside_box(event.get("location")):
-                row["shots_inside_box"] += 1
+                block["shots_inside_box"] += 1
             else:
-                row["shots_outside_box"] += 1
+                block["shots_outside_box"] += 1
 
         elif etype == "Pass":
             passd = event["pass"]
-            row = slot(event)
-            row["passes_attempted"] += 1
+            block["passes_attempted"] += 1
             complete = is_complete_pass(event)
             if complete:
-                row["passes_completed"] += 1
+                block["passes_completed"] += 1
             if is_flag(event, "under_pressure"):
-                row["passes_under_pressure"] += 1
+                block["passes_under_pressure"] += 1
                 if complete:
-                    row["passes_under_pressure_completed"] += 1
+                    block["passes_under_pressure_completed"] += 1
             end = passd.get("end_location")
             if end and end[0] >= FINAL_THIRD_X:
-                row["final_third_passes"] += 1
+                block["final_third_passes"] += 1
             if is_flag(passd, "goal_assist"):
-                row["assists"] += 1
+                block["assists"] += 1
 
         elif etype == "Duel":
             duel = event.get("duel", {})
             if duel.get("type", {}).get("name") == "Tackle" and \
                     duel.get("outcome", {}).get("name") in SUCCESSFUL_OUTCOMES:
-                slot(event)["successful_tackles"] += 1
+                block["successful_tackles"] += 1
 
         elif etype == "Interception":
             outcome = event.get("interception", {}).get("outcome", {}).get("name")
             if outcome in SUCCESSFUL_OUTCOMES:
-                slot(event)["successful_interceptions"] += 1
+                block["successful_interceptions"] += 1
 
         elif etype == "Clearance":
-            slot(event)["clearances"] += 1
+            block["clearances"] += 1
 
         elif etype in ("Miscontrol", "Dispossessed"):
-            slot(event)["ball_losses"] += 1
+            block["ball_losses"] += 1
 
         elif etype == "Carry":
-            row = slot(event)
-            row["carries"] += 1
-            row["carry_distance"] += euclidean(
+            block["carries"] += 1
+            block["carry_distance"] += euclidean(
                 event.get("location"), event.get("carry", {}).get("end_location"))
 
         elif etype == "Pressure":
-            slot(event)["pressures"] += 1
+            block["pressures"] += 1
+
+    for event in events:
+        if not in_play(event) or "player" not in event:
+            continue
+
+        row = slot(event)
+        period = event.get("period")
+
+        # Accumulate to total
+        accumulate(row, event)
+
+        # Accumulate to period block
+        if period in OPEN_PLAY_PERIODS:
+            if period not in row["by_period"]:
+                row["by_period"][period] = blank_period()
+            accumulate(row["by_period"][period], event)
 
     # attach minutes and derive percentage metrics
     result = {}
@@ -675,6 +711,12 @@ def _compute_player_stats(events: list[dict], minutes: dict,
         row["pass_completion_under_pressure_pct"] = (
             row["passes_under_pressure_completed"] / row["passes_under_pressure"] * 100.0
             if row["passes_under_pressure"] else None)
+        # Round per-period blocks
+        row["by_period"] = {
+            str(p): {k: (round(v, 4) if k in ("xg", "carry_distance") else v)
+                     for k, v in block.items()}
+            for p, block in row.get("by_period", {}).items()
+        }
         result[(team, player)] = row
 
     # players with minutes but no on-ball events still get a record
@@ -683,7 +725,8 @@ def _compute_player_stats(events: list[dict], minutes: dict,
             result[(team, player)] = dict(
                 blank, minutes=mins, player_id=player_ids.get((team, player)),
                 team_id=None, pass_completion_pct=None,
-                pass_completion_under_pressure_pct=None)
+                pass_completion_under_pressure_pct=None,
+                by_period={})
     return result
 
 
@@ -779,6 +822,7 @@ def _extract_player_match_facts(
             carry_distance=row.get("carry_distance", 0.0),
             pressures=row.get("pressures", 0),
             final_third_passes=row.get("final_third_passes", 0),
+            by_period=row.get("by_period", {}),
         ))
     return results
 

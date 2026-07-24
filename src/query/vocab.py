@@ -6,15 +6,295 @@ for structured queries against match_facts.json.
 
 CRITICAL: These vocabularies are grounded in what match_facts.json ACTUALLY
 persists. Do not add metrics or dimensions that don't exist in the data.
+
+The MetricKind / MetricSpec system (from the reference implementation) makes
+metric behavior explicit: which metrics are period-sliceable, which are
+derived ratios (computed from numerator/denominator on read), and which exist
+only at match grain. This prevents the class of bug where a period filter is
+applied to a metric that has no per-period data.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 
 # ---------------------------------------------------------------------------
-# Metrics (from PlayerMatchFacts)
+# MetricKind / MetricSpec — explicit metric typing
+# ---------------------------------------------------------------------------
+
+
+class MetricKind(str, Enum):
+    STORED = "stored"                # a stored per-period + total count
+    DERIVED_RATIO = "derived_ratio"  # computed from numerator/denominator on read
+    MATCH_ONLY = "match_only"        # exists only at match grain (not per period)
+
+
+@dataclass(frozen=True)
+class MetricSpec:
+    key: str
+    kind: MetricKind
+    period_sliceable: bool
+    numerator: str | None = None      # for DERIVED_RATIO
+    denominator: str | None = None    # for DERIVED_RATIO
+    aggregatable: bool = True         # can it be summed across matches for rank/aggregate?
+
+
+# ---------------------------------------------------------------------------
+# Registered metrics — the single source of truth for metric behavior
+# ---------------------------------------------------------------------------
+
+REGISTERED_METRICS: dict[str, MetricSpec] = {
+    # --- 17 event-level stored counts: period-sliceable, summable ---
+    "shots":                    MetricSpec("shots", MetricKind.STORED, True),
+    "xg":                       MetricSpec("xg", MetricKind.STORED, True),
+    "goals":                    MetricSpec("goals", MetricKind.STORED, True),
+    "assists":                  MetricSpec("assists", MetricKind.STORED, True),
+    "passes_attempted":         MetricSpec("passes_attempted", MetricKind.STORED, True),
+    "passes_completed":         MetricSpec("passes_completed", MetricKind.STORED, True),
+    "passes_under_pressure":    MetricSpec("passes_under_pressure", MetricKind.STORED, True),
+    "passes_under_pressure_completed":
+                                MetricSpec("passes_under_pressure_completed", MetricKind.STORED, True),
+    "shots_inside_box":         MetricSpec("shots_inside_box", MetricKind.STORED, True),
+    "shots_outside_box":        MetricSpec("shots_outside_box", MetricKind.STORED, True),
+    "successful_tackles":       MetricSpec("successful_tackles", MetricKind.STORED, True),
+    "successful_interceptions": MetricSpec("successful_interceptions", MetricKind.STORED, True),
+    "clearances":               MetricSpec("clearances", MetricKind.STORED, True),
+    "ball_losses":              MetricSpec("ball_losses", MetricKind.STORED, True),
+    "carries":                  MetricSpec("carries", MetricKind.STORED, True),
+    "carry_distance":           MetricSpec("carry_distance", MetricKind.STORED, True),
+    "pressures":                MetricSpec("pressures", MetricKind.STORED, True),
+    "final_third_passes":       MetricSpec("final_third_passes", MetricKind.STORED, True),
+
+    # --- 2 ratios: period-sliceable via their components, NOT summable ---
+    "pass_pct": MetricSpec(
+        "pass_pct", MetricKind.DERIVED_RATIO, True,
+        numerator="passes_completed", denominator="passes_attempted",
+        aggregatable=False),
+    "pass_pct_under_pressure": MetricSpec(
+        "pass_pct_under_pressure", MetricKind.DERIVED_RATIO, True,
+        numerator="passes_under_pressure_completed",
+        denominator="passes_under_pressure", aggregatable=False),
+
+    # --- aliases for the existing pass_completion_pct / pass_completion_under_pressure_pct ---
+    "pass_completion_pct": MetricSpec(
+        "pass_completion_pct", MetricKind.DERIVED_RATIO, True,
+        numerator="passes_completed", denominator="passes_attempted",
+        aggregatable=False),
+    "pass_completion_under_pressure_pct": MetricSpec(
+        "pass_completion_under_pressure_pct", MetricKind.DERIVED_RATIO, True,
+        numerator="passes_under_pressure_completed",
+        denominator="passes_under_pressure", aggregatable=False),
+
+    # --- minutes: match grain only, NOT period-sliceable ---
+    "minutes": MetricSpec("minutes", MetricKind.MATCH_ONLY, False),
+
+    # --- team-level metrics (match grain) ---
+    "possession_share": MetricSpec("possession_share", MetricKind.MATCH_ONLY, False),
+    "crosses": MetricSpec("crosses", MetricKind.STORED, True),
+    "first_shot_minute": MetricSpec("first_shot_minute", MetricKind.MATCH_ONLY, False),
+    "first_goal_minute": MetricSpec("first_goal_minute", MetricKind.MATCH_ONLY, False),
+}
+
+
+# ---------------------------------------------------------------------------
+# Metric aliases — natural language -> canonical metric key
+# ---------------------------------------------------------------------------
+
+METRIC_ALIASES: dict[str, str] = {
+    "expected goals": "xg", "xg": "xg",
+    "goal": "goals", "goals": "goals", "scored": "goals",
+    "assist": "assists", "assists": "assists",
+    "shot": "shots", "shots": "shots",
+    "pass": "passes_attempted", "passes": "passes_attempted",
+    "completed passes": "passes_completed",
+    "pass completion": "pass_pct", "pass accuracy": "pass_pct", "pass %": "pass_pct",
+    "tackle": "successful_tackles", "tackles": "successful_tackles",
+    "interception": "successful_interceptions", "interceptions": "successful_interceptions",
+    "clearance": "clearances", "clearances": "clearances",
+    "carry": "carries", "carries": "carries",
+    "carry distance": "carry_distance",
+    "pressure": "pressures", "pressures": "pressures",
+    "final third pass": "final_third_passes", "final third passes": "final_third_passes",
+    "ball loss": "ball_losses", "ball losses": "ball_losses", "turnovers": "ball_losses",
+    "minute": "minutes", "minutes": "minutes",
+    "possession": "possession_share", "possession share": "possession_share",
+    "crosses": "crosses", "cross": "crosses",
+}
+
+
+# ---------------------------------------------------------------------------
+# Sliceable dimensions
+# ---------------------------------------------------------------------------
+
+
+class Dimension(str, Enum):
+    OPPONENT = "opponent"
+    STAGE = "stage"
+    MATCH = "match"
+    PERIOD = "period"
+
+
+SLICEABLE_DIMENSIONS: frozenset[Dimension] = frozenset({
+    Dimension.OPPONENT, Dimension.STAGE, Dimension.MATCH, Dimension.PERIOD,
+})
+
+VALID_STAGES = frozenset({
+    "Group Stage", "Round of 16", "Quarter-finals",
+    "Semi-finals", "3rd Place Final", "Final",
+})
+
+VALID_PERIODS = frozenset({1, 2, 3, 4})
+PERIOD_ALIASES: dict[str, tuple[int, ...]] = {
+    "first half": (1,), "1st half": (1,), "h1": (1,),
+    "second half": (2,), "2nd half": (2,), "h2": (2,),
+    "extra time": (3, 4), "et": (3, 4),
+    "full match": (1, 2, 3, 4), "full time": (1, 2, 3, 4),
+}
+
+
+# ---------------------------------------------------------------------------
+# Operations and entity types (for structured query schema)
+# ---------------------------------------------------------------------------
+
+
+class Operation(str, Enum):
+    LOOKUP = "lookup"
+    RANK = "rank"
+    COMPARE = "compare"
+    AGGREGATE = "aggregate"
+
+
+class EntityType(str, Enum):
+    PLAYER = "player"
+    TEAM = "team"
+
+
+@dataclass
+class EntityRef:
+    type: EntityType
+    id: int | None = None
+    name: str | None = None
+
+
+@dataclass
+class Filters:
+    opponent_id: int | None = None
+    stage: str | None = None
+    match_id: int | None = None
+    periods: tuple[int, ...] | None = None
+
+
+@dataclass
+class StructuredQueryV2:
+    """Structured query using the new MetricKind-aware schema."""
+    operation: Operation
+    metrics: list[str]
+    entity: EntityRef
+    filters: Filters = field(default_factory=Filters)
+    order: str = "desc"
+    limit: int = 1
+
+
+@dataclass
+class ValidationIssue:
+    field: str
+    value: object
+    reason: str
+
+
+@dataclass
+class ValidationResult:
+    ok: bool
+    issues: list[ValidationIssue] = field(default_factory=list)
+    droppable: list[ValidationIssue] = field(default_factory=list)
+
+
+def validate_query(q) -> ValidationResult:
+    """
+    Fail-at-parse-time validation. Two outcomes:
+
+    * hard failure (ok=False): unknown metric, unknown dimension
+    * droppable (ok=True): well-formed but filter inexpressible for metric
+      (e.g. period filter on match-only `minutes`)
+
+    Accepts either StructuredQueryV2 or the legacy StructuredQuery from query_schema.
+    """
+    issues: list[ValidationIssue] = []
+    droppable: list[ValidationIssue] = []
+
+    # Extract metrics — handle both old and new schema
+    if hasattr(q, 'metrics'):
+        metrics = q.metrics
+    elif hasattr(q, 'metric'):
+        metrics = [q.metric]
+    else:
+        metrics = []
+
+    if not metrics:
+        issues.append(ValidationIssue("metrics", None, "no metric specified"))
+
+    unknown = [m for m in metrics if m not in REGISTERED_METRICS]
+    for m in unknown:
+        issues.append(ValidationIssue(
+            "metric", m, f"'{m}' is not a registered metric"))
+
+    known = [m for m in metrics if m in REGISTERED_METRICS]
+
+    # Period filter validation
+    periods = None
+    if hasattr(q, 'filters'):
+        if hasattr(q.filters, 'periods'):
+            periods = q.filters.periods
+        elif isinstance(q.filters, list):
+            for f in q.filters:
+                if hasattr(f, 'dimension') and f.dimension == 'period':
+                    periods = f.value
+
+    if periods is not None:
+        bad_periods = [p for p in periods if p not in VALID_PERIODS]
+        for p in bad_periods:
+            issues.append(ValidationIssue(
+                "period", p, f"period {p} is not a valid open-play period"))
+        for m in known:
+            spec = REGISTERED_METRICS[m]
+            if not spec.period_sliceable:
+                droppable.append(ValidationIssue(
+                    "period", periods,
+                    f"metric '{m}' is stored at match grain only and cannot be "
+                    "sliced by period; period filter dropped for this metric"))
+
+    # Stage validation
+    stage = None
+    if hasattr(q, 'filters'):
+        if hasattr(q.filters, 'stage'):
+            stage = q.filters.stage
+        elif isinstance(q.filters, list):
+            for f in q.filters:
+                if hasattr(f, 'dimension') and f.dimension == 'stage':
+                    stage = f.value
+
+    if stage is not None and stage not in VALID_STAGES:
+        issues.append(ValidationIssue(
+            "stage", stage, f"'{stage}' is not a known competition stage"))
+
+    # Aggregatable check for rank/aggregate
+    operation = q.operation if hasattr(q, 'operation') else getattr(q, 'intent', None)
+    if operation in ("rank", "aggregate", Operation.RANK, Operation.AGGREGATE):
+        for m in known:
+            if not REGISTERED_METRICS[m].aggregatable:
+                issues.append(ValidationIssue(
+                    "metric", m,
+                    f"metric '{m}' is a ratio and cannot be summed/ranked across "
+                    "matches directly; rank on a component count instead"))
+
+    return ValidationResult(ok=not issues, issues=issues, droppable=droppable)
+
+
+# ---------------------------------------------------------------------------
+# Metrics (from PlayerMatchFacts) — legacy dictionaries (backward compat)
 # ---------------------------------------------------------------------------
 
 # Numeric metrics that can be summed, averaged, maxed, etc.

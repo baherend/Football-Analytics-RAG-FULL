@@ -6,11 +6,17 @@ Handles numeric, superlative, slice, and aggregation queries.
 
 HARD RULE: never silently drop a requested filter — if a filter can't be
 honored, the result must say so explicitly (dropped_filters list).
+
+Enhanced with MetricKind-aware resolution from the reference implementation:
+- Period slicing via by_period data
+- Validation via validate_query()
+- FactStore for indexed lookups
 """
 
 from __future__ import annotations
 
 import json
+import statistics
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -20,6 +26,8 @@ from src.query.vocab import (
     ALL_PLAYER_METRICS, PLAYER_DIMENSIONS, MATCH_DIMENSIONS,
     resolve_metric, resolve_aggregation, resolve_stage,
     PERCENTAGE_METRICS,
+    REGISTERED_METRICS, MetricKind, MetricSpec,
+    validate_query, PERIOD_ALIASES, VALID_PERIODS,
 )
 
 # ---------------------------------------------------------------------------
@@ -46,6 +54,119 @@ def _load_data(path: Path = DATA_PATH) -> dict:
         return _data_cache
 
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# FactStore — indexed access to match_facts.json
+# ---------------------------------------------------------------------------
+
+
+class FactStore:
+    """In-memory index over match_facts.json for efficient lookups."""
+
+    def __init__(self, data: dict):
+        self.data = data
+        self.player_match_facts = data.get("player_match_facts", [])
+        self.match_facts = data.get("match_facts", [])
+        self.team_match_facts = data.get("team_match_facts", [])
+
+        # Build indexes
+        self.by_player_id: dict[int, list[dict]] = defaultdict(list)
+        self.by_team_name: dict[str, list[dict]] = defaultdict(list)
+        self.match_index: dict[int, dict] = {}
+        self.team_name_to_id: dict[str, int] = {}
+        self.player_name_to_id: dict[str, int] = {}
+
+        for mf in self.match_facts:
+            self.match_index[mf["match_id"]] = mf
+            self.team_name_to_id[mf["home_team"]] = mf.get("home_team_id", 0)
+            self.team_name_to_id[mf["away_team"]] = mf.get("away_team_id", 0)
+
+        for pmf in self.player_match_facts:
+            pid = pmf.get("player_id")
+            if pid:
+                self.by_player_id[pid].append(pmf)
+                self.player_name_to_id[pmf["player_name"]] = pid
+            self.by_team_name[pmf.get("team_name", "")].append(pmf)
+
+    def player_matches(self, player_id: int) -> list[dict]:
+        return self.by_player_id.get(player_id, [])
+
+    def team_matches(self, team_name: str) -> list[dict]:
+        return self.by_team_name.get(team_name, [])
+
+
+# ---------------------------------------------------------------------------
+# Period-aware metric reading (MetricKind-aware)
+# ---------------------------------------------------------------------------
+
+
+def _read_metric_from_record(
+    record: dict, metric: str, periods: tuple[int, ...] | None = None
+) -> tuple[float | None, bool]:
+    """
+    Read a metric from a player_match_fact record, respecting MetricKind.
+
+    Returns (value, period_applied):
+        - For STORED metrics: sum across selected periods or total
+        - For DERIVED_RATIO: compute from numerator/denominator
+        - For MATCH_ONLY: return match value, period_applied=False if period requested
+
+    period_applied is False when a period filter was requested but the metric
+    is match-grain — the caller records that as a dropped filter.
+    """
+    spec = REGISTERED_METRICS.get(metric)
+    if spec is None:
+        # Fallback: try direct read
+        return record.get(metric), True
+
+    if spec.kind == MetricKind.MATCH_ONLY:
+        # minutes, possession_share: no period breakdown
+        return record.get(metric), (periods is None)
+
+    # Check if record has by_period data
+    by_period = record.get("by_period", {})
+
+    if periods is not None and by_period:
+        # Use period-specific data
+        blocks = [by_period[str(p)] for p in periods if str(p) in by_period]
+        if not blocks:
+            blocks = [{}]
+    else:
+        # Use total
+        blocks = [record]
+
+    if spec.kind == MetricKind.STORED:
+        return sum(b.get(metric, 0) for b in blocks), True
+
+    if spec.kind == MetricKind.DERIVED_RATIO:
+        num = sum(b.get(spec.numerator, 0) for b in blocks)
+        den = sum(b.get(spec.denominator, 0) for b in blocks)
+        return (num / den * 100.0 if den else None), True
+
+    return None, True
+
+
+def _resolve_periods_from_filters(filters: list[Filter]) -> tuple[int, ...] | None:
+    """Extract period filter from Filter list, resolving aliases."""
+    for f in filters:
+        if f.dimension == "period":
+            val = f.value
+            if isinstance(val, str):
+                # Check period aliases
+                alias = PERIOD_ALIASES.get(val.lower())
+                if alias:
+                    return alias
+                # Try as integer
+                try:
+                    return (int(val),)
+                except ValueError:
+                    pass
+            elif isinstance(val, (list, tuple)):
+                return tuple(val)
+            elif isinstance(val, int):
+                return (val,)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +232,7 @@ def _validate_filters(filters: list[Filter], entity: str) -> tuple[list[Filter],
     dropped = []
 
     for f in filters:
-        if f.dimension in valid_dims or f.dimension in {"team_name", "match_id", "stage", "is_knockout"}:
+        if f.dimension in valid_dims or f.dimension in {"team_name", "match_id", "stage", "is_knockout", "period"}:
             valid.append(f)
         else:
             dropped.append(f.dimension)
@@ -239,6 +360,10 @@ def resolve(query: StructuredQuery, data: dict | None = None) -> StructuredResul
         "partial"  — some filters dropped
         "empty"    — no matching records
 
+    Enhanced with MetricKind-aware validation: period filters on match-only
+    metrics are detected and reported as dropped_filters rather than silently
+    returning incorrect values.
+
     Results are cached and automatically invalidated when match_facts.json changes.
     """
     from src.cache import get_cached_structured_result, set_cached_structured_result
@@ -254,8 +379,28 @@ def resolve(query: StructuredQuery, data: dict | None = None) -> StructuredResul
     if data is None:
         data = _load_data()
 
+    # Validate query using MetricKind-aware validation
+    validation = validate_query(query)
+    extra_dropped = []
+    if validation.droppable:
+        for issue in validation.droppable:
+            extra_dropped.append(issue.field)
+    if validation.issues and not validation.ok:
+        # Hard validation failure
+        return StructuredResult(
+            status="empty",
+            query=query,
+            data=[],
+            aggregated_value=None,
+            dropped_filters=[],
+            explanation="; ".join(f"{i.field}={i.value}: {i.reason}" for i in validation.issues),
+        )
+
     # Validate filters
     valid_filters, dropped = _validate_filters(query.filters, query.entity)
+
+    # Add period-related dropped filters from MetricKind validation
+    dropped = list(set(dropped + extra_dropped))
 
     # Resolve entity name if provided
     entity_name = query.entity_name

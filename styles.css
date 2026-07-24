@@ -1,0 +1,140 @@
+/* FIFA World Cup 2022 Analytics — Dark Theme */
+
+/* Global background */
+.stApp {
+    background-color: #0B1220;
+}
+
+/* Sidebar */
+[data-testid="stSidebar"] {
+    background-color: #0F1A2E;
+    border-right: 1px solid #1E293B;
+}
+
+/* Headers */
+h1, h2, h3, h4, h5, h6 {
+    color: #FFFFFF !important;
+}
+
+/* Text */
+p, li, span, label {
+    color: #C9D1D9;
+}
+
+/* Metric cards */
+[data-testid="stMetric"] {
+    background-color: #1A2332;
+    border: 1px solid #2D3748;
+    border-radius: 12px;
+    padding: 16px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+}
+
+[data-testid="stMetricValue"] {
+    color: #00C853 !important;
+    font-size: 28px !important;
+    font-weight: 700 !important;
+}
+
+[data-testid="stMetricLabel"] {
+    color: #8B95A5 !important;
+    font-size: 14px !important;
+}
+
+/* Chat messages */
+[data-testid="stChatMessage"] {
+    background-color: #1A2332;
+    border: 1px solid #2D3748;
+    border-radius: 16px;
+    padding: 16px;
+    margin: 8px 0;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+/* Chat input */
+[data-testid="stChatInput"] {
+    background-color: #1A2332;
+    border: 2px solid #2D3748;
+    border-radius: 12px;
+    color: #FFFFFF;
+}
+
+[data-testid="stChatInput"]:focus-within {
+    border-color: #00C853;
+}
+
+/* Buttons */
+.stButton > button {
+    background-color: #1A2332;
+    color: #FFFFFF;
+    border: 1px solid #2D3748;
+    border-radius: 8px;
+    padding: 8px 16px;
+    transition: all 0.2s;
+}
+
+.stButton > button:hover {
+    background-color: #2D3748;
+    border-color: #00C853;
+}
+
+/* Primary button */
+.stButton > button[kind="primary"] {
+    background-color: #00C853;
+    color: #0B1220;
+    border: none;
+    font-weight: 600;
+}
+
+.stButton > button[kind="primary"]:hover {
+    background-color: #00E676;
+}
+
+/* Expander */
+[data-testid="stExpander"] {
+    background-color: #1A2332;
+    border: 1px solid #2D3748;
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+[data-testid="stExpander"] summary {
+    color: #00C853;
+    font-weight: 600;
+}
+
+/* Dividers */
+hr {
+    border-color: #2D3748;
+}
+
+/* Columns gap fix */
+[data-testid="stHorizontalBlock"] {
+    gap: 12px;
+}
+
+/* Code blocks */
+code {
+    background-color: #1A2332;
+    color: #00C853;
+    border-radius: 4px;
+    padding: 2px 6px;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #0B1220;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #2D3748;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #4A5568;
+}
