@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import math
 import statistics
+import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -251,7 +252,9 @@ class MatchFacts:
     shootout_goals: dict[str, int] = field(default_factory=dict)
 
     # Validation
-    card_parity_ok: bool = True
+    # NOTE: Only checks card COUNT parity, not card identity. Covers all 64
+    # matches but lineup cards schema is undocumented (§7 limitation #1).
+    card_count_matches: bool = True
     lineup_card_count: int = 0
 
     def to_dict(self) -> dict:
@@ -561,7 +564,7 @@ def _extract_match_facts(match: dict, events: list[dict], lineups: list[dict]) -
         substitutions=subs,
         shots=all_shots,
         shootout_goals=dict(shootout_goals),
-        card_parity_ok=lineup_card_count == len(cards),
+        card_count_matches=lineup_card_count == len(cards),
         lineup_card_count=lineup_card_count,
     )
 
@@ -620,8 +623,8 @@ def _compute_player_stats(events: list[dict], minutes: dict,
         player = event["player"]["name"]
         key = (team, player)
         if key not in stats:
-            stats[key] = dict(blank, player_id=event["player"]["id"],
-                              team_id=event["team"]["id"],
+            stats[key] = dict(blank, player_id=(event.get("player") or {}).get("id"),
+                              team_id=(event.get("team") or {}).get("id"),
                               by_period={})
         return stats[key]
 
@@ -691,11 +694,12 @@ def _compute_player_stats(events: list[dict], minutes: dict,
         # Accumulate to total
         accumulate(row, event)
 
-        # Accumulate to period block
+        # Accumulate to period block (use string keys for JSON compatibility)
         if period in OPEN_PLAY_PERIODS:
-            if period not in row["by_period"]:
-                row["by_period"][period] = blank_period()
-            accumulate(row["by_period"][period], event)
+            period_key = str(period)
+            if period_key not in row["by_period"]:
+                row["by_period"][period_key] = blank_period()
+            accumulate(row["by_period"][period_key], event)
 
     # attach minutes and derive percentage metrics
     result = {}
@@ -879,7 +883,7 @@ def _extract_team_match_facts(
             continue
         td = team_data[team]
         if td["team_id"] is None:
-            td["team_id"] = event["team"]["id"]
+            td["team_id"] = (event.get("team") or {}).get("id")
 
         pattern = event.get("play_pattern", {}).get("name")
         if pattern:
@@ -954,7 +958,7 @@ def extract_all(data_root: Path = DATA_ROOT, verbose: bool = True) -> dict:
         "matches_processed": 0,
         "total_player_facts": 0,
         "total_team_facts": 0,
-        "card_parity_failures": [],
+        "card_count_mismatches": [],
     }
 
     for match in sorted(matches, key=lambda m: m["match_date"]):
@@ -966,8 +970,8 @@ def extract_all(data_root: Path = DATA_ROOT, verbose: bool = True) -> dict:
         mf = _extract_match_facts(match, events, lineups)
         all_match_facts.append(mf)
 
-        if not mf.card_parity_ok:
-            diagnostics["card_parity_failures"].append(match_id)
+        if not mf.card_count_matches:
+            diagnostics["card_count_mismatches"].append(match_id)
 
         # Extract player-match facts
         player_facts = _extract_player_match_facts(match, events, lineups, mf)
@@ -993,15 +997,19 @@ def extract_all(data_root: Path = DATA_ROOT, verbose: bool = True) -> dict:
     }
 
 
-def persist(result: dict, output_dir: Path = Path(".")) -> Path:
+def persist(result: dict, output_dir: Path = Path("output")) -> Path:
     """
     Persist extracted facts to JSON files.
 
     Writes:
-        match_facts.json — all three record types
+        <output_dir>/match_facts.json — all three record types
+
+    Defaults to output/ so the artifact lands where every downstream phase
+    (generate_documents.py, resolver.py, cache.py) expects to read it.
 
     Returns path to the output file.
     """
+    output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "match_facts.json"
 
     data = {

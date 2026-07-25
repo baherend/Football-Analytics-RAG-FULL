@@ -59,6 +59,81 @@ def _extract_stage_filter(query: str) -> Filter | None:
 
 
 # ---------------------------------------------------------------------------
+# Opponent extraction
+# ---------------------------------------------------------------------------
+
+# Patterns for extracting opponent from queries
+OPPONENT_PATTERNS = [
+    r"against\s+([a-zA-Z\s]+?)(?:\s*$|\s*\?|\s*,|\s+in|\s+during)",
+    r"vs\.?\s+([a-zA-Z\s]+?)(?:\s*$|\s*\?|\s*,|\s+in|\s+during)",
+    r"versus\s+([a-zA-Z\s]+?)(?:\s*$|\s*\?|\s*,|\s+in|\s+during)",
+]
+
+
+def _extract_opponent_filter(query: str) -> Filter | None:
+    """Extract opponent filter from query text."""
+    query_lower = query.lower().strip()
+
+    for pattern in OPPONENT_PATTERNS:
+        match = re.search(pattern, query_lower)
+        if match:
+            opponent = match.group(1).strip()
+            # Clean up common words
+            for word in ["the", "a", "an"]:
+                if opponent.startswith(word + " "):
+                    opponent = opponent[len(word) + 1:]
+            if opponent and len(opponent) > 1:
+                return Filter("opponent", "eq", opponent.title())
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Comparison detection
+# ---------------------------------------------------------------------------
+
+
+# Patterns that indicate a comparison between two entities
+COMPARISON_PATTERNS = [
+    r"compare\s+(.+?)\s+and\s+(.+?)(?:\s|$|\?)",
+    r"who\s+(?:performed|played|did)\s+better.*?(\w+)\s+or\s+(\w+)",
+    r"(\w+)\s+vs\.?\s+(\w+)",
+    r"(\w+)\s+versus\s+(\w+)",
+    r"who\s+(?:is|was)\s+better.*?(\w+)\s+or\s+(\w+)",
+    r"difference\s+between\s+(.+?)\s+and\s+(.+?)(?:\s|$|\?)",
+]
+
+
+def _detect_comparison(query: str) -> list[str]:
+    """
+    Detect if a query is comparing two entities.
+
+    Returns list of entity names if comparison detected, empty list otherwise.
+    """
+    query_lower = query.lower().strip()
+
+    for pattern in COMPARISON_PATTERNS:
+        match = re.search(pattern, query_lower)
+        if match:
+            entities = []
+            for group in match.groups():
+                if group:
+                    # Clean up the entity name
+                    entity = group.strip().rstrip("'s")
+                    # Remove common suffixes
+                    for suffix in ["'s tournament performance", "'s performance",
+                                   "'s stats", "'s goals"]:
+                        if entity.endswith(suffix):
+                            entity = entity[:-len(suffix)]
+                    if entity and len(entity) > 1:
+                        entities.append(entity.title())
+            if len(entities) >= 2:
+                return entities[:2]  # Return first two entities
+
+    return []
+
+
+# ---------------------------------------------------------------------------
 # Route types
 # ---------------------------------------------------------------------------
 
@@ -92,12 +167,16 @@ class RoutedResult:
 STRUCTURED_PATTERNS = [
     # Numeric: "how many goals did Messi score"
     r"how\s+many\s+(\w+)\s+(?:did|does|has|have)\s+(.+?)(?:\s+score|\s+have|\s+get|\?|$)",
+    # Numeric: "how many penalty kicks did Messi score" (multi-word metric)
+    r"how\s+many\s+([\w\s]+?)\s+(?:did|does|has|have)\s+(.+?)(?:\s+score|\s+have|\s+get|\?|$)",
     # Superlative: "who scored the most goals"
     r"who\s+(?:has\s+the|had\s+the|scored\s+the|got\s+the)?\s*(most|highest|best|least|lowest|fewest)\s+(\w+)",
+    # Superlative: "who was the most aggressive player"
+    r"who\s+(?:was|is|were|are)\s+(?:the\s+)?(most|highest|best|least|lowest|fewest)\s+([\w\s]+?)(?:\s+player|\?|$)",
     # Superlative: "which team had the highest xG"
     r"which\s+(team|player)\s+(?:has|had|scored|got)\s+(?:the\s+)?(most|highest|best|least|lowest|fewest)\s+(\w+)",
     # Numeric: "what is Messi's xG"
-    r"what\s+(?:is|was|are|were)\s+(.+?)(?:'s|'s)?\s+(\w+)",
+    r"what\s+(?:is|was|are|were)\s+(.+?)(?:'s|'s)?\s+([\w\s]+?)(?:\s*$|\s*\?)",
     # Direct metric: "Messi goals"
     r"^(.+?)\s+(goals|assists|xg|shots|passes|minutes|tackles|interceptions)$",
 ]
@@ -147,6 +226,11 @@ def classify_query(query: str) -> tuple[str, float]:
         if re.search(pattern, query_lower):
             return "structured", 0.9
 
+    # Check for comparison queries (hybrid) — must come before semantic patterns
+    # because "compare X and Y" matches both comparison and semantic patterns
+    if _detect_comparison(query):
+        return "hybrid", 0.9
+
     # Check for explicit semantic patterns
     for pattern in SEMANTIC_PATTERNS:
         if re.search(pattern, query_lower):
@@ -184,9 +268,10 @@ def parse_structured_query(query: str) -> StructuredQuery | None:
     """
     query_lower = query.lower().strip()
 
-    # Extract stage filter if present
+    # Extract filters if present
     stage_filter = _extract_stage_filter(query)
-    filters = [stage_filter] if stage_filter else []
+    opponent_filter = _extract_opponent_filter(query)
+    filters = [f for f in [stage_filter, opponent_filter] if f is not None]
 
     # Pattern: "how many <metric> did <player> score/have"
     match = re.search(
@@ -201,6 +286,44 @@ def parse_structured_query(query: str) -> StructuredQuery | None:
                 intent="numeric",
                 entity="player",
                 metric=metric,
+                aggregation="sum",
+                entity_name=player_raw.strip().title(),
+                filters=filters,
+            )
+        else:
+            # Return query with unknown metric — resolver will report "Unknown metric"
+            return StructuredQuery(
+                intent="numeric",
+                entity="player",
+                metric=metric_raw,
+                aggregation="sum",
+                entity_name=player_raw.strip().title(),
+                filters=filters,
+            )
+
+    # Pattern: "how many <multi-word metric> did <player> score/have"
+    match = re.search(
+        r"how\s+many\s+([\w\s]+?)\s+(?:did|does|has|have)\s+(.+?)(?:\s+score|\s+have|\s+get|\?|$)",
+        query_lower
+    )
+    if match:
+        metric_raw, player_raw = match.groups()
+        metric = resolve_metric(metric_raw.strip())
+        if metric:
+            return StructuredQuery(
+                intent="numeric",
+                entity="player",
+                metric=metric,
+                aggregation="sum",
+                entity_name=player_raw.strip().title(),
+                filters=filters,
+            )
+        else:
+            # Return query with unknown metric — resolver will report "Unknown metric"
+            return StructuredQuery(
+                intent="numeric",
+                entity="player",
+                metric=metric_raw.strip(),
                 aggregation="sum",
                 entity_name=player_raw.strip().title(),
                 filters=filters,
@@ -221,6 +344,35 @@ def parse_structured_query(query: str) -> StructuredQuery | None:
                 entity="player",
                 metric=metric,
                 aggregation=agg,
+                limit=1,
+                filters=filters,
+            )
+
+    # Pattern: "who was the most <metric> player"
+    match = re.search(
+        r"who\s+(?:was|is|were|are)\s+(?:the\s+)?(most|highest|best|least|lowest|fewest)\s+([\w\s]+?)(?:\s+player|\?|$)",
+        query_lower
+    )
+    if match:
+        agg_raw, metric_raw = match.groups()
+        metric = resolve_metric(metric_raw.strip())
+        agg = resolve_aggregation(agg_raw)
+        if metric and agg:
+            return StructuredQuery(
+                intent="superlative",
+                entity="player",
+                metric=metric,
+                aggregation=agg,
+                limit=1,
+                filters=filters,
+            )
+        else:
+            # Return query with unknown metric — resolver will report "Unknown metric"
+            return StructuredQuery(
+                intent="superlative",
+                entity="player",
+                metric=metric_raw.strip() if metric_raw else "unknown",
+                aggregation=agg or "max",
                 limit=1,
                 filters=filters,
             )
@@ -260,6 +412,34 @@ def parse_structured_query(query: str) -> StructuredQuery | None:
                 filters=filters,
             )
 
+    # Pattern: "what is <player>'s <metric>"
+    match = re.search(
+        r"what\s+(?:is|was|are|were)\s+(.+?)(?:'s|'s)?\s+([\w\s]+?)(?:\s*$|\s*\?)",
+        query_lower
+    )
+    if match:
+        player_raw, metric_raw = match.groups()
+        metric = resolve_metric(metric_raw.strip())
+        if metric:
+            return StructuredQuery(
+                intent="numeric",
+                entity="player",
+                metric=metric,
+                aggregation="sum",
+                entity_name=player_raw.strip().title(),
+                filters=filters,
+            )
+        else:
+            # Return query with unknown metric — resolver will report "Unknown metric"
+            return StructuredQuery(
+                intent="numeric",
+                entity="player",
+                metric=metric_raw.strip(),
+                aggregation="sum",
+                entity_name=player_raw.strip().title(),
+                filters=filters,
+            )
+
     return None
 
 
@@ -279,15 +459,15 @@ def route_query(query: str) -> Route:
     if classification == "structured":
         structured_query = parse_structured_query(query)
         if structured_query:
-            # Validate metric exists
-            if resolve_metric(structured_query.metric):
-                return Route(
-                    path="structured",
-                    confidence=confidence,
-                    reason=f"Query matches structured pattern: {structured_query.intent}",
-                    structured_query=structured_query,
-                )
-        # Couldn't parse or validate as structured, fall back to semantic
+            # Always return structured path — let resolver report "Unknown metric"
+            # This enables the structured→semantic fallback logic
+            return Route(
+                path="structured",
+                confidence=confidence,
+                reason=f"Query matches structured pattern: {structured_query.intent}",
+                structured_query=structured_query,
+            )
+        # Couldn't parse as structured, fall back to semantic
         return Route(
             path="semantic",
             confidence=0.6,
@@ -324,11 +504,80 @@ def execute_route(route: Route, semantic_k: int = 3) -> RoutedResult:
     semantic_chunks = None
     context = ""
 
-    if route.path in ("structured", "hybrid") and route.structured_query:
+    # For hybrid comparison queries, run structured queries for each entity
+    comparison_entities = _detect_comparison(route.semantic_query or "")
+    if route.path == "hybrid" and comparison_entities:
+        # Run structured queries for each entity
+        from src.query.query_schema import StructuredQuery
+
+        entity_results = []
+        for entity_name in comparison_entities:
+            # Default to "goals" metric for comparison queries
+            sq = StructuredQuery(
+                intent="numeric",
+                entity="player",
+                metric="goals",
+                aggregation="sum",
+                entity_name=entity_name,
+            )
+            try:
+                result = structured_resolve(sq)
+                entity_results.append((entity_name, result))
+            except Exception as e:
+                print(f"Structured resolution failed for {entity_name}: {e}")
+
+        # Combine entity results into a single explanation
+        if entity_results:
+            parts = []
+            for name, result in entity_results:
+                if result.status in ("resolved", "partial"):
+                    parts.append(f"{name}: {result.explanation}")
+                else:
+                    parts.append(f"{name}: No data available")
+            combined_explanation = " | ".join(parts)
+
+            # Create a synthetic StructuredResult-like object
+            class _CombinedResult:
+                def __init__(self, explanation):
+                    self.status = "resolved"
+                    self.explanation = explanation
+                    self.aggregated_value = None
+                    self.data = []
+                    self.dropped_filters = []
+
+            structured_result = _CombinedResult(combined_explanation)
+    elif route.path in ("structured", "hybrid") and route.structured_query:
         try:
             structured_result = structured_resolve(route.structured_query)
         except Exception as e:
             print(f"Structured resolution failed: {e}")
+
+        # Structured → Semantic fallback
+        # If structured returned empty, attempt semantic fallback.
+        # The prompt's honesty rules ensure the LLM won't fabricate answers
+        # from loosely related chunks.
+        if (structured_result is not None and
+                structured_result.status == "empty"):
+            # Attempt semantic fallback — prompt ensures honest refusal
+            try:
+                import importlib.util
+                spec = importlib.util.spec_from_file_location("retrieve_context", "07_retrieve_context.py")
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                fallback_chunks = mod.hybrid_search(route.semantic_query or route.structured_query.entity_name or "", k=semantic_k)
+                if fallback_chunks:
+                    # Prepend fallback context with explicit honesty instruction
+                    fallback_context = (
+                        "NOTE: The structured data did not contain a direct answer to this question. "
+                        "The following context is from related documents and may or may not be relevant. "
+                        "Only answer if the context clearly and specifically addresses the original question. "
+                        "If the context does not clearly answer the question, state that the data does not "
+                        "contain a direct answer.\n\n"
+                    )
+                    context = fallback_context + mod.build_context(fallback_chunks)
+                    semantic_chunks = fallback_chunks
+            except Exception as e:
+                print(f"Semantic fallback failed: {e}")
 
     if route.path in ("semantic", "hybrid"):
         try:

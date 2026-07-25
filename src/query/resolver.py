@@ -53,7 +53,10 @@ def _load_data(path: Path = DATA_PATH) -> dict:
         _data_cache_mtime = mtime
         return _data_cache
 
-    return json.loads(path.read_text(encoding="utf-8"))
+    raise FileNotFoundError(
+        f"match_facts.json not found at {path}. "
+        "Run 'python -m src.extraction.extract' to generate it."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +271,46 @@ def _aggregate(records: list[dict], metric: str, aggregation: str) -> float | in
     return None
 
 
+def _aggregate_period_aware(
+    records: list[dict],
+    metric: str,
+    aggregation: str,
+    periods: tuple[int, ...] | None,
+) -> float | int | None:
+    """
+    Aggregate a metric across records, MetricKind-aware.
+
+    When `periods` is set, reads the per-period `by_period` blocks via
+    _read_metric_from_record (period-sliceable metrics), computes ratios from
+    their components, and falls back to the match total for match-only metrics.
+    When `periods` is None this is equivalent to reading the stored total.
+    """
+    if not records:
+        return None
+
+    values = []
+    for record in records:
+        value, _ = _read_metric_from_record(record, metric, periods)
+        if value is not None:
+            values.append(value)
+
+    if not values:
+        return None
+
+    if aggregation == "sum":
+        return sum(values)
+    elif aggregation in ("avg", "mean"):
+        return sum(values) / len(values)
+    elif aggregation == "max":
+        return max(values)
+    elif aggregation == "min":
+        return min(values)
+    elif aggregation == "count":
+        return len(values)
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Entity resolution
 # ---------------------------------------------------------------------------
@@ -301,15 +344,18 @@ def _resolve_player_name(name: str, data: dict) -> str | None:
             return pname
 
     # Substring match (for partial names like "Mbappe" -> "Mbappé")
+    # Uses word-boundary matching: the query must match a complete word in the name.
+    import unicodedata
     for pname in name_counts:
-        # Remove accents for comparison
-        import unicodedata
         pname_normalized = unicodedata.normalize('NFD', pname.lower())
         name_normalized = unicodedata.normalize('NFD', name_lower)
         # Remove combining characters (accents)
         pname_ascii = ''.join(c for c in pname_normalized if unicodedata.category(c) != 'Mn')
         name_ascii = ''.join(c for c in name_normalized if unicodedata.category(c) != 'Mn')
-        if name_ascii in pname_ascii:
+        # Word-boundary match: query must match a complete word in the player name
+        pname_words = pname_ascii.split()
+        name_words = name_ascii.split()
+        if any(nw == pw for nw in name_words for pw in pname_words):
             return pname
 
     # Original substring match
@@ -368,8 +414,11 @@ def resolve(query: StructuredQuery, data: dict | None = None) -> StructuredResul
     """
     from src.cache import get_cached_structured_result, set_cached_structured_result
 
-    # Generate cache key from query
-    cache_key = f"{query.entity}:{query.entity_name}:{query.metric}:{query.aggregation}:{query.intent}:{query.limit}"
+    # Generate cache key from the FULL query (including filters, limit, sort).
+    # Serializing query.to_dict() ensures two queries that differ only by their
+    # filters (e.g. Messi's goals overall vs. in the knockouts) get distinct
+    # cache entries instead of colliding and returning each other's answers.
+    cache_key = json.dumps(query.to_dict(), sort_keys=True, default=str)
 
     # Check cache
     cached = get_cached_structured_result(cache_key)
@@ -386,14 +435,22 @@ def resolve(query: StructuredQuery, data: dict | None = None) -> StructuredResul
         for issue in validation.droppable:
             extra_dropped.append(issue.field)
     if validation.issues and not validation.ok:
-        # Hard validation failure
+        # Hard validation failure. Phrase unknown-metric failures with the
+        # canonical "Unknown metric: X" wording so callers (and tests) get a
+        # stable, recognizable message.
+        metric_issues = [i for i in validation.issues if i.field == "metric"]
+        if metric_issues:
+            explanation = "; ".join(f"Unknown metric: {i.value}" for i in metric_issues)
+        else:
+            explanation = "; ".join(
+                f"{i.field}={i.value}: {i.reason}" for i in validation.issues)
         return StructuredResult(
             status="empty",
             query=query,
             data=[],
             aggregated_value=None,
             dropped_filters=[],
-            explanation="; ".join(f"{i.field}={i.value}: {i.reason}" for i in validation.issues),
+            explanation=explanation,
         )
 
     # Validate filters
@@ -401,6 +458,25 @@ def resolve(query: StructuredQuery, data: dict | None = None) -> StructuredResul
 
     # Add period-related dropped filters from MetricKind validation
     dropped = list(set(dropped + extra_dropped))
+
+    # Period is not a stored column on the records — it selects per-period
+    # blocks at read time. Pull it out here and remove it from the filters that
+    # are applied as row predicates (otherwise _apply_filter matches against a
+    # missing "period" field and silently drops every record).
+    periods = _resolve_periods_from_filters(valid_filters)
+    valid_filters = [f for f in valid_filters if f.dimension != "period"]
+
+    # The knockout filter (stage=None) is also special — _apply_filter would
+    # match against a missing "stage" field and silently drop records. Pull it
+    # out and apply it separately via the is_knockout boolean field.
+    knockout_filter = None
+    clean_filters = []
+    for f in valid_filters:
+        if f.dimension == "stage" and f.value is None:
+            knockout_filter = f
+        else:
+            clean_filters.append(f)
+    valid_filters = clean_filters
 
     # Resolve entity name if provided
     entity_name = query.entity_name
@@ -456,11 +532,9 @@ def resolve(query: StructuredQuery, data: dict | None = None) -> StructuredResul
                 f = Filter(f.dimension, f.operator, resolved_stage)
         records = _apply_filter(records, f)
 
-    # Handle "knockout" special filter
-    for f in valid_filters:
-        if f.dimension == "stage" and f.value is None:
-            # This means "knockout" — filter is_knockout=True
-            records = [r for r in records if r.get("is_knockout", False)]
+    # Handle "knockout" special filter (extracted earlier)
+    if knockout_filter:
+        records = [r for r in records if r.get("is_knockout", False)]
 
     if not records:
         status = "partial" if dropped else "empty"
@@ -486,6 +560,20 @@ def resolve(query: StructuredQuery, data: dict | None = None) -> StructuredResul
     if agg is None:
         agg = "sum"
 
+    # If a period slice was requested but it can't be honored — either the
+    # metric isn't period-sliceable, or the persisted records carry no
+    # per-period breakdown — drop the period filter honestly (→ partial) and
+    # fall back to match totals, rather than silently returning an unsliced
+    # value dressed up as the slice.
+    if periods is not None:
+        spec = REGISTERED_METRICS.get(metric)
+        sliceable = spec.period_sliceable if spec else False
+        has_period_data = any(r.get("by_period") for r in records)
+        if not sliceable or not has_period_data:
+            if "period" not in dropped:
+                dropped.append("period")
+            periods = None
+
     # For superlatives, aggregate by entity first, then sort
     if query.intent == "superlative" and query.limit:
         # Group by player/team and aggregate
@@ -498,12 +586,11 @@ def resolve(query: StructuredQuery, data: dict | None = None) -> StructuredResul
         # IMPORTANT: Use "sum" for cumulative metrics (goals, assists, xG),
         # but "avg" for percentage/average metrics (possession_share, pass_completion_pct)
         # The query's aggregation (e.g., "max") is for ranking, not per-entity aggregation
-        from src.query.vocab import PERCENTAGE_METRICS
         per_entity_agg = "avg" if metric in PERCENTAGE_METRICS else "sum"
 
         agg_records = []
         for key, group in entity_groups.items():
-            agg_val = _aggregate(group, metric, per_entity_agg)
+            agg_val = _aggregate_period_aware(group, metric, per_entity_agg, periods)
             if agg_val is not None:
                 # Use the first record as base, override the metric with aggregated value
                 base = dict(group[0])
@@ -517,7 +604,7 @@ def resolve(query: StructuredQuery, data: dict | None = None) -> StructuredResul
         result_data = sorted_records[:query.limit]
         agg_value = result_data[0].get(metric) if result_data else None
     else:
-        agg_value = _aggregate(records, metric, agg)
+        agg_value = _aggregate_period_aware(records, metric, agg, periods)
         result_data = records
 
     # Build explanation
@@ -546,6 +633,14 @@ def resolve(query: StructuredQuery, data: dict | None = None) -> StructuredResul
             explanation = f"No {metric} data available."
 
     status = "partial" if dropped else "resolved"
+
+    # Make partial answers self-explanatory: state which filters were dropped
+    # right in the human-readable explanation the LLM ultimately sees.
+    if dropped:
+        explanation += (
+            f" (Note: could not apply filter(s): "
+            f"{', '.join(sorted(set(dropped)))}; value shown is unfiltered.)"
+        )
 
     result = StructuredResult(
         status=status,
@@ -600,7 +695,7 @@ def resolve_from_text(query_text: str) -> StructuredResult:
     match = player_metric_pattern.search(query_text)
     if match:
         metric_raw, player_raw = match.groups()
-        from vocab import METRIC_SYNONYMS
+        from src.query.vocab import METRIC_SYNONYMS
         metric = METRIC_SYNONYMS.get(metric_raw.lower(), metric_raw.lower())
         player = _resolve_player_name(player_raw.strip(), data)
         if player and metric:
@@ -621,7 +716,7 @@ def resolve_from_text(query_text: str) -> StructuredResult:
     match = who_pattern.search(query_text)
     if match:
         _, agg_raw, metric_raw = match.groups()
-        from vocab import METRIC_SYNONYMS, AGGREGATION_SYNONYMS
+        from src.query.vocab import METRIC_SYNONYMS, AGGREGATION_SYNONYMS
         metric = METRIC_SYNONYMS.get(metric_raw.lower(), metric_raw.lower())
         agg = AGGREGATION_SYNONYMS.get(agg_raw.lower(), "max")
         q = StructuredQuery(

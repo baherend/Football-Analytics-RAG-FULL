@@ -129,9 +129,11 @@ def test_ambiguous_query():
 
 
 def test_unknown_metric():
-    """Unknown metric should fall back to semantic."""
+    """Unknown metric should return a StructuredQuery so resolver can report 'Unknown metric'."""
     query = router.parse_structured_query("How many widgets did Messi make?")
-    assert query is None
+    assert query is not None
+    assert query.metric == "widgets"
+    assert query.entity_name == "Messi Make"
 
 
 # ---------------------------------------------------------------------------

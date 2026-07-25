@@ -40,9 +40,25 @@ def import_module(name: str, path: str):
 
 # Load modules
 print("Loading RAG pipeline...")
-router_mod = import_module("router", "08_router.py")
-prompt_mod = import_module("prompt_builder", "src/generation/prompt_builder.py")
-llm_mod = import_module("llm", "src/generation/llm.py")
+try:
+    router_mod = import_module("router", "08_router.py")
+except Exception as e:
+    print(f"Error loading router (08_router.py): {e}")
+    print("Make sure all dependencies are installed: pip install -r requirements.txt")
+    raise SystemExit(1)
+
+try:
+    prompt_mod = import_module("prompt_builder", "src/generation/prompt_builder.py")
+except Exception as e:
+    print(f"Error loading prompt builder: {e}")
+    raise SystemExit(1)
+
+try:
+    llm_mod = import_module("llm", "src/generation/llm.py")
+except Exception as e:
+    print(f"Error loading LLM module: {e}")
+    raise SystemExit(1)
+
 print("Pipeline loaded.\n")
 
 
@@ -61,6 +77,8 @@ class ChatState:
         self.last_prompt: str = ""
         self.show_context: bool = False
         self.show_route: bool = False
+        self.history: list[dict] = []  # [{"role": "user/assistant", "content": ...}]
+        self.max_history: int = 10
 
 
 state = ChatState()
@@ -77,8 +95,24 @@ def process_query(question: str) -> str:
 
     Returns the generated answer.
     """
-    # Step 1: Route the query
-    route = router_mod.route_query(question)
+    # Step 1: Route the query (respect mode override)
+    if state.mode == "structured":
+        # Force structured path — route normally but execute structured only
+        route = router_mod.route_query(question)
+        if route.path != "structured" or not route.structured_query:
+            # Can't parse as structured — fall back to hybrid
+            route.path = "hybrid"
+    elif state.mode == "semantic":
+        # Force semantic path — skip structured
+        route = router_mod.Route(
+            path="semantic",
+            confidence=1.0,
+            reason="User forced semantic mode",
+            semantic_query=question,
+        )
+    else:
+        # hybrid — use normal routing
+        route = router_mod.route_query(question)
 
     # Step 2: Execute the route
     result = router_mod.execute_route(route, semantic_k=5)
@@ -90,25 +124,74 @@ def process_query(question: str) -> str:
         f"Reason: {route.reason}"
     )
 
-    # Step 3: Build context
+    # Step 3: Build context.
+    # Combine both paths so hybrid queries don't silently discard the exact
+    # structured answer. The structured result is presented first and flagged
+    # as authoritative; semantic chunks follow as supporting narrative.
+    parts = []
+    sr = result.structured_result
+    has_structured = False
+    if sr and sr.status in ("resolved", "partial") and sr.explanation:
+        # Mark structured data as authoritative
+        parts.append(
+            "## Authoritative Data (Verified from Match Facts)\n\n"
+            "The following numbers are VERIFIED and must be used EXACTLY:\n\n"
+            + sr.explanation
+        )
+        has_structured = True
     if result.semantic_chunks:
-        context = prompt_mod.format_context_for_prompt(result.semantic_chunks)
-    elif result.structured_result and result.structured_result.explanation:
-        context = result.structured_result.explanation
-    else:
-        context = "No relevant context found."
+        parts.append(prompt_mod.format_context_for_prompt(result.semantic_chunks))
+
+    context = "\n\n".join(parts) if parts else "No relevant context found."
 
     state.last_context = context
 
-    # Step 4: Build prompt
-    prompt = prompt_mod.build_prompt(question, context)
+    # Step 4: Build prompt (include conversation history for follow-up support)
+    history_text = ""
+    if state.history:
+        recent = state.history[-state.max_history:]
+        history_lines = []
+        for turn in recent:
+            role = "User" if turn["role"] == "user" else "Assistant"
+            history_lines.append(f"{role}: {turn['content'][:200]}")
+        history_text = "\n".join(history_lines)
+
+    if history_text:
+        full_context = f"## Previous conversation\n{history_text}\n\n{context}"
+    else:
+        full_context = context
+
+    prompt = prompt_mod.build_prompt(question, full_context, has_structured=has_structured)
     state.last_prompt = prompt
 
     # Step 5: Generate answer
+    state.history.append({"role": "user", "content": question})
     try:
         answer = llm_mod.generate_answer(prompt, model=state.model)
     except Exception as e:
-        answer = f"[LLM Error: {e}]\n\nRetrieved context was:\n{context[:500]}..."
+        answer = f"[LLM Error: {e}]\n\nRetrieved context ({len(context)} chars, showing first 2000):\n{context[:2000]}..."
+
+    # Step 6: Validate answer against structured facts
+    if sr and sr.status in ("resolved", "partial") and sr.explanation:
+        try:
+            from src.generation.validator import validate_answer
+            validation = validate_answer(
+                llm_answer=answer,
+                structured_explanation=sr.explanation,
+                structured_value=sr.aggregated_value,
+            )
+            if not validation.is_valid:
+                # Contradiction detected — use corrected answer
+                answer = validation.corrected_answer or answer
+                print(f"[VALIDATION] Contradiction detected: {validation}")
+        except Exception as e:
+            # Validation is best-effort — don't break the pipeline
+            pass
+
+    state.history.append({"role": "assistant", "content": answer})
+    # Trim history to max size
+    if len(state.history) > state.max_history * 2:
+        state.history = state.history[-state.max_history * 2:]
 
     return answer
 
@@ -244,6 +327,19 @@ def handle_command(cmd: str):
     elif cmd == "/toggle-route":
         state.show_route = not state.show_route
         print(f"Show route after answer: {state.show_route}")
+
+    elif cmd == "/history":
+        if state.history:
+            print("\nConversation History:")
+            for turn in state.history:
+                role = "You" if turn["role"] == "user" else "Assistant"
+                print(f"  {role}: {turn['content'][:150]}...")
+        else:
+            print("\nNo conversation history yet.")
+
+    elif cmd == "/clear":
+        state.history.clear()
+        print("Conversation history cleared.")
 
     elif cmd in ("/quit", "/exit", "/q"):
         print("Goodbye!")

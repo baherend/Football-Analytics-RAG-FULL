@@ -20,18 +20,26 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 # Default model (fast, cost-effective for RAG)
-DEFAULT_MODEL = "anthropic/claude-3-haiku"
+DEFAULT_MODEL = "llama-3.3-70b-versatile"
 
-# OpenRouter API endpoint
+# API endpoints
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# Model options
+# Model options (Groq models)
 MODELS = {
-    "haiku": "anthropic/claude-3-haiku",
-    "sonnet": "anthropic/claude-3-sonnet",
-    "gpt4": "openai/gpt-4-turbo",
-    "gpt3.5": "openai/gpt-3.5-turbo",
-    "mistral": "mistralai/mistral-7b-instruct",
+    "llama-3.3-70b-versatile": {"model": "llama-3.3-70b-versatile", "provider": "groq"},
+    "llama-3.1-8b-instant": {"model": "llama-3.1-8b-instant", "provider": "groq"},
+    "gemma2-9b-it": {"model": "gemma2-9b-it", "provider": "groq"},
+    "mixtral-8x7b-32768": {"model": "mixtral-8x7b-32768", "provider": "groq"},
+    "haiku": {"model": "anthropic/claude-3-haiku", "provider": "openrouter"},
+    "sonnet": {"model": "anthropic/claude-3-sonnet", "provider": "openrouter"},
+}
+
+# Provider API keys (read from environment)
+PROVIDER_KEYS = {
+    "groq": "GROQ_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
 }
 
 
@@ -40,13 +48,14 @@ MODELS = {
 # ---------------------------------------------------------------------------
 
 
-def get_api_key() -> str:
-    """Get OpenRouter API key from environment."""
-    key = os.environ.get("OPENROUTER_API_KEY")
+def get_api_key(provider: str = "groq") -> str:
+    """Get API key from environment for the specified provider."""
+    key_env = PROVIDER_KEYS.get(provider, "GROQ_API_KEY")
+    key = os.environ.get(key_env)
     if not key:
         raise ValueError(
-            "OPENROUTER_API_KEY not set. "
-            "Set it with: $env:OPENROUTER_API_KEY = 'your-key-here'"
+            f"{key_env} not set. "
+            f"Set it with: $env:{key_env} = 'your-key-here'"
         )
     return key
 
@@ -56,6 +65,7 @@ def generate_answer(
     model: str = DEFAULT_MODEL,
     max_tokens: int = 1024,
     temperature: float = 0.3,
+    api_key: str | None = None,
 ) -> str:
     """
     Generate an answer using the LLM.
@@ -65,6 +75,7 @@ def generate_answer(
         model: Model identifier (full name or shortcut)
         max_tokens: Maximum tokens in response
         temperature: Sampling temperature (lower = more deterministic)
+        api_key: Optional API key (overrides environment variable)
 
     Returns:
         Generated answer string.
@@ -72,20 +83,41 @@ def generate_answer(
     import httpx
 
     # Resolve model shortcut
-    if model in MODELS:
-        model = MODELS[model]
+    model_config = MODELS.get(model)
+    if model_config:
+        model_name = model_config["model"]
+        provider = model_config["provider"]
+    else:
+        # Assume it's a full model name for Groq
+        model_name = model
+        provider = "groq"
 
-    api_key = get_api_key()
+    # Get provider API key (parameter takes priority)
+    if not api_key:
+        key_env = PROVIDER_KEYS.get(provider, "GROQ_API_KEY")
+        api_key = os.environ.get(key_env)
+    if not api_key:
+        raise ValueError(
+            "API key not provided. Pass api_key parameter or set GROQ_API_KEY env var."
+        )
+
+    # Select API endpoint (allow override from environment)
+    if provider == "groq":
+        api_url = os.environ.get("GROQ_API_URL", GROQ_API_URL)
+    else:
+        api_url = OPENROUTER_API_URL
 
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://football-analytics-rag.local",
-        "X-Title": "Football Analytics RAG",
     }
 
+    if provider == "openrouter":
+        headers["HTTP-Referer"] = "https://football-analytics-rag.local"
+        headers["X-Title"] = "Football Analytics RAG"
+
     payload = {
-        "model": model,
+        "model": model_name,
         "messages": [
             {"role": "user", "content": prompt}
         ],
@@ -95,7 +127,7 @@ def generate_answer(
 
     try:
         response = httpx.post(
-            OPENROUTER_API_URL,
+            api_url,
             json=payload,
             headers=headers,
             timeout=60.0,

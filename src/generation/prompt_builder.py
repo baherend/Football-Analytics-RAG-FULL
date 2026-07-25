@@ -25,6 +25,29 @@ Rules:
 7. Cite specific matches, players, or statistics when possible.
 8. Be precise with numbers (goals, xG, minutes, etc.)."""
 
+
+SYSTEM_PROMPT_WITH_STRUCTURED = """You are a football analytics assistant specializing in FIFA World Cup 2022 data.
+You answer questions based on structured data and retrieved context from StatsBomb match data.
+
+CRITICAL RULE — STRUCTURED DATA IS AUTHORITATIVE:
+When structured facts are provided (marked as "Authoritative Data"), they are the
+GROUND TRUTH. You MUST use these exact numbers. NEVER round, estimate, or
+re-derive numbers independently. If the structured data says "Messi scored 7 goals,"
+you must say exactly "7 goals" — not "about 7 goals" or "approximately 7 goals."
+
+RULES:
+1. Structured facts take precedence for ALL numeric claims. Retrieved text is only
+   for narrative framing around those numbers.
+2. If structured data provides a direct answer, present it confidently without hedging.
+3. If the context doesn't contain enough information to answer the question, say
+   explicitly: "I don't have enough data to answer this question."
+4. NEVER guess or infer information not present in the context.
+5. For subjective questions (e.g., "best player", "most aggressive"), refuse to
+   answer unless the context provides explicit rankings or metrics.
+6. Cite specific matches, players, or statistics when possible.
+7. When comparing entities (e.g., "Messi vs Mbappé"), use the structured numbers
+   for each entity and the retrieved text for narrative context."""
+
 CONTEXT_TEMPLATE = """## Retrieved Context
 
 The following documents were retrieved from the FIFA World Cup 2022 database:
@@ -50,6 +73,7 @@ def build_prompt(
     context: str,
     include_system: bool = True,
     include_answer_prefix: bool = True,
+    has_structured: bool = False,
 ) -> str:
     """
     Build a complete prompt for the LLM.
@@ -59,6 +83,7 @@ def build_prompt(
         context: Retrieved context from hybrid search
         include_system: Whether to include system instructions
         include_answer_prefix: Whether to include answer prefix
+        has_structured: Whether structured facts are present in context
 
     Returns:
         Complete prompt string.
@@ -66,7 +91,11 @@ def build_prompt(
     parts = []
 
     if include_system:
-        parts.append(SYSTEM_PROMPT)
+        # Use authoritative prompt when structured data is present
+        if has_structured:
+            parts.append(SYSTEM_PROMPT_WITH_STRUCTURED)
+        else:
+            parts.append(SYSTEM_PROMPT)
         parts.append("")
 
     parts.append(CONTEXT_TEMPLATE.format(context=context))
@@ -76,6 +105,38 @@ def build_prompt(
     if include_answer_prefix:
         parts.append("")
         parts.append(ANSWER_TEMPLATE)
+
+    return "\n".join(parts)
+
+
+def format_structured_context(
+    structured_explanation: str,
+    additional_context: str = "",
+) -> str:
+    """
+    Format structured facts for the prompt, marking them as authoritative.
+
+    Parameters:
+        structured_explanation: The explanation from StructuredResult
+        additional_context: Optional semantic context to include
+
+    Returns:
+        Formatted context string with structured facts marked as authoritative
+    """
+    parts = []
+
+    if structured_explanation:
+        parts.append("## Authoritative Data (Verified from Match Facts)")
+        parts.append("")
+        parts.append("The following numbers are VERIFIED and must be used EXACTLY:")
+        parts.append("")
+        parts.append(structured_explanation)
+        parts.append("")
+
+    if additional_context:
+        parts.append("## Additional Context (Narrative)")
+        parts.append("")
+        parts.append(additional_context)
 
     return "\n".join(parts)
 
