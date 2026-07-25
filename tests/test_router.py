@@ -14,7 +14,7 @@ from src.query.query_schema import StructuredQuery, StructuredResult
 from src.query.resolver import resolve as structured_resolve
 
 # Import router with proper module setup
-spec = importlib.util.spec_from_file_location("router", Path("08_router.py"))
+spec = importlib.util.spec_from_file_location("router", Path("06_retrieve_context.py"))
 router = importlib.util.module_from_spec(spec)
 sys.modules["router"] = router  # Required for dataclass resolution
 spec.loader.exec_module(router)
@@ -162,13 +162,13 @@ def run_all_tests():
     for test in tests:
         try:
             test()
-            print(f"  ✓ {test.__name__}")
+            print(f"  PASS {test.__name__}")
             passed += 1
         except AssertionError as e:
-            print(f"  ✗ {test.__name__}: {e}")
+            print(f"  FAIL {test.__name__}: {e}")
             failed += 1
         except Exception as e:
-            print(f"  ✗ {test.__name__}: {type(e).__name__}: {e}")
+            print(f"  FAIL {test.__name__}: {type(e).__name__}: {e}")
             failed += 1
 
     print(f"\nResults: {passed} passed, {failed} failed")

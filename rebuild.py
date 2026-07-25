@@ -50,17 +50,15 @@ def main() -> int:
         return 1
 
     steps = [
-        ("extract.py",              "Phase 1: Extract structured facts"),
-        ("generate_documents.py",   "Phase 2: Generate documents"),
-        ("02_preprocessing.py",     "Phase 3: Preprocess text"),
+        ("01_documents.py",         "Phase 1: Extract facts + generate documents"),
+        ("02_preprocessing.py",     "Phase 2: Preprocess text"),
         ("03_chunking.py",          "Phase 3: Chunk documents"),
-        ("04_representation.py",    "Phase 3: Build BM25/TF-IDF indices"),
+        ("04_vector_representation.py", "Phase 4: Build all vector representations"),
     ]
 
     if not args.quick:
         steps.extend([
-            ("05_embeddings.py",        "Phase 4: Generate embeddings"),
-            ("06_create_chroma_store.py", "Phase 4: Create ChromaDB"),
+            ("05_create_chroma_store.py", "Phase 4: Create ChromaDB store"),
         ])
 
     for script, description in steps:

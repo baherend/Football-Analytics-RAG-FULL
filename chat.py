@@ -41,22 +41,16 @@ def import_module(name: str, path: str):
 # Load modules
 print("Loading RAG pipeline...")
 try:
-    router_mod = import_module("router", "08_router.py")
+    router_mod = import_module("router", "06_retrieve_context.py")
 except Exception as e:
-    print(f"Error loading router (08_router.py): {e}")
+    print(f"Error loading router (06_retrieve_context.py): {e}")
     print("Make sure all dependencies are installed: pip install -r requirements.txt")
     raise SystemExit(1)
 
 try:
-    prompt_mod = import_module("prompt_builder", "src/generation/prompt_builder.py")
+    prompting_mod = import_module("prompting", "07_prompting.py")
 except Exception as e:
-    print(f"Error loading prompt builder: {e}")
-    raise SystemExit(1)
-
-try:
-    llm_mod = import_module("llm", "src/generation/llm.py")
-except Exception as e:
-    print(f"Error loading LLM module: {e}")
+    print(f"Error loading prompting module (07_prompting.py): {e}")
     raise SystemExit(1)
 
 print("Pipeline loaded.\n")
@@ -140,7 +134,7 @@ def process_query(question: str) -> str:
         )
         has_structured = True
     if result.semantic_chunks:
-        parts.append(prompt_mod.format_context_for_prompt(result.semantic_chunks))
+        parts.append(prompting_mod.format_context_for_prompt(result.semantic_chunks))
 
     context = "\n\n".join(parts) if parts else "No relevant context found."
 
@@ -161,13 +155,13 @@ def process_query(question: str) -> str:
     else:
         full_context = context
 
-    prompt = prompt_mod.build_prompt(question, full_context, has_structured=has_structured)
+    prompt = prompting_mod.build_prompt(question, full_context, has_structured=has_structured)
     state.last_prompt = prompt
 
     # Step 5: Generate answer
     state.history.append({"role": "user", "content": question})
     try:
-        answer = llm_mod.generate_answer(prompt, model=state.model)
+        answer = prompting_mod.generate_answer(prompt, model=state.model)
     except Exception as e:
         answer = f"[LLM Error: {e}]\n\nRetrieved context ({len(context)} chars, showing first 2000):\n{context[:2000]}..."
 
@@ -309,12 +303,12 @@ def handle_command(cmd: str):
             print(f"Invalid mode: {new_mode}")
 
     elif cmd == "/model":
-        models = list(llm_mod.MODELS.keys())
+        models = list(prompting_mod.MODELS.keys())
         current = state.model
         print(f"\nCurrent model: {current}")
         print(f"Available models: {', '.join(models)}")
         new_model = input("Switch to: ").strip().lower()
-        if new_model in llm_mod.MODELS:
+        if new_model in prompting_mod.MODELS:
             state.model = new_model
             print(f"Model switched to: {new_model}")
         else:
@@ -358,7 +352,7 @@ def main() -> int:
     """Main entry point."""
     # Check for API key
     try:
-        llm_mod.get_api_key()
+        prompting_mod.get_api_key()
     except ValueError as e:
         print(f"Warning: {e}")
         print("You can still test retrieval, but LLM generation will fail.\n")

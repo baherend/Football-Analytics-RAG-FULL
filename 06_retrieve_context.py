@@ -1,18 +1,20 @@
 """
-07_retrieve_context.py — Phase 4: Hybrid Retrieval Pipeline
+06_retrieve_context.py — Phase 5/6: Retrieval + Query Router
 
-Combines lexical (BM25) and semantic (dense) retrieval using
-Reciprocal Rank Fusion (RRF).
+Single entry point that takes a user query and returns ready-to-use context.
+
+Combines:
+- Lexical (BM25) and semantic (dense) retrieval via Reciprocal Rank Fusion
+- Query routing (structured / semantic / hybrid)
+- Structured query parsing and execution (via src.query.resolver)
+- Context building for the LLM prompt
 
 Pipeline:
-    User Query → BM25 Search → Dense Search → Merge → RRF → Top-K → Context
+    User Query → Route → (Structured? Semantic? Both?) → Context
 
-Input: user query
-Output: retrieved context
-
-Backward compatibility:
-    - semantic_search() remains unchanged (dense-only)
-    - hybrid_search() is the new default
+Usage:
+    python 06_retrieve_context.py "How many goals did Messi score?"
+    python 06_retrieve_context.py "Compare Messi and Mbappé" --verbose
 """
 
 from __future__ import annotations
@@ -56,7 +58,7 @@ def _load_bm25_index():
     if not bm25_path.exists():
         raise FileNotFoundError(
             f"BM25 index not found at {bm25_path}. "
-            "Run 04_representation.py first."
+            "Run 04_vector_representation.py first."
         )
 
     with open(bm25_path, "rb") as f:
@@ -813,6 +815,414 @@ def retrieve_context(
 
 
 # ---------------------------------------------------------------------------
+# Query Router — Classification + Parsing + Execution
+# (merged from 08_router.py)
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass, field
+from src.query.query_schema import StructuredQuery, StructuredResult, Filter
+from src.query.resolver import resolve as structured_resolve
+from src.query.vocab import resolve_metric, resolve_aggregation, METRIC_SYNONYMS, AGGREGATION_SYNONYMS
+
+
+# Stage extraction patterns
+STAGE_PATTERNS = [
+    (r"in\s+the\s+(?:semi[\s-]*final)", "Semi-finals"),
+    (r"in\s+the\s+(?:quarter[\s-]*final)", "Quarter-finals"),
+    (r"in\s+the\s+(?:round\s+of\s+16)", "Round of 16"),
+    (r"in\s+the\s+(?:group\s+stage)", "Group Stage"),
+    (r"in\s+the\s+(?:final)", "Final"),
+    (r"in\s+the\s+(?:3rd\s+place)", "3rd Place Final"),
+    (r"in\s+knockout", None),
+    (r"in\s+the\s+knockout", None),
+    (r"during\s+the\s+(?:semi[\s-]*final)", "Semi-finals"),
+    (r"during\s+the\s+(?:quarter[\s-]*final)", "Quarter-finals"),
+    (r"during\s+the\s+(?:final)", "Final"),
+]
+
+
+def _extract_stage_filter(query: str) -> Filter | None:
+    """Extract stage filter from query text."""
+    query_lower = query.lower().strip()
+    for pattern, stage_value in STAGE_PATTERNS:
+        if re.search(pattern, query_lower):
+            if stage_value is None:
+                return Filter("is_knockout", "eq", True)
+            else:
+                return Filter("stage", "eq", stage_value)
+    return None
+
+
+# Opponent extraction patterns
+OPPONENT_PATTERNS = [
+    r"against\s+([a-zA-Z\s]+?)(?:\s*$|\s*\?|\s*,|\s+in|\s+during)",
+    r"vs\.?\s+([a-zA-Z\s]+?)(?:\s*$|\s*\?|\s*,|\s+in|\s+during)",
+    r"versus\s+([a-zA-Z\s]+?)(?:\s*$|\s*\?|\s*,|\s+in|\s+during)",
+]
+
+
+def _extract_opponent_filter(query: str) -> Filter | None:
+    """Extract opponent filter from query text."""
+    query_lower = query.lower().strip()
+    for pattern in OPPONENT_PATTERNS:
+        match = re.search(pattern, query_lower)
+        if match:
+            opponent = match.group(1).strip()
+            for word in ["the", "a", "an"]:
+                if opponent.startswith(word + " "):
+                    opponent = opponent[len(word) + 1:]
+            if opponent and len(opponent) > 1:
+                return Filter("opponent", "eq", opponent.title())
+    return None
+
+
+# Comparison detection patterns (router version)
+COMPARISON_PATTERNS = [
+    r"compare\s+(.+?)\s+and\s+(.+?)(?:\s|$|\?)",
+    r"who\s+(?:performed|played|did)\s+better.*?(\w+)\s+or\s+(\w+)",
+    r"(\w+)\s+vs\.?\s+(\w+)",
+    r"(\w+)\s+versus\s+(\w+)",
+    r"who\s+(?:is|was)\s+better.*?(\w+)\s+or\s+(\w+)",
+    r"difference\s+between\s+(.+?)\s+and\s+(.+?)(?:\s|$|\?)",
+]
+
+
+def _detect_comparison(query: str) -> list[str]:
+    """Detect if a query is comparing two entities. Returns entity names."""
+    query_lower = query.lower().strip()
+    for pattern in COMPARISON_PATTERNS:
+        match = re.search(pattern, query_lower)
+        if match:
+            entities = []
+            for group in match.groups():
+                if group:
+                    entity = group.strip().rstrip("'s")
+                    for suffix in ["'s tournament performance", "'s performance",
+                                   "'s stats", "'s goals"]:
+                        if entity.endswith(suffix):
+                            entity = entity[:-len(suffix)]
+                    if entity and len(entity) > 1:
+                        entities.append(entity.title())
+            if len(entities) >= 2:
+                return entities[:2]
+    return []
+
+
+# Route types
+@dataclass
+class Route:
+    """Routing decision."""
+    path: str  # "semantic" | "structured" | "hybrid"
+    confidence: float
+    reason: str
+    structured_query: StructuredQuery | None = None
+    semantic_query: str | None = None
+
+
+@dataclass
+class RoutedResult:
+    """Result from routed execution."""
+    route: Route
+    structured_result: StructuredResult | None = None
+    semantic_chunks: list[dict] | None = None
+    context: str = ""
+    explanation: str = ""
+
+
+# Query classification
+STRUCTURED_PATTERNS = [
+    r"how\s+many\s+(\w+)\s+(?:did|does|has|have)\s+(.+?)(?:\s+score|\s+have|\s+get|\?|$)",
+    r"how\s+many\s+([\w\s]+?)\s+(?:did|does|has|have)\s+(.+?)(?:\s+score|\s+have|\s+get|\?|$)",
+    r"who\s+(?:has\s+the|had\s+the|scored\s+the|got\s+the)?\s*(most|highest|best|least|lowest|fewest)\s+(\w+)",
+    r"who\s+(?:was|is|were|are)\s+(?:the\s+)?(most|highest|best|least|lowest|fewest)\s+([\w\s]+?)(?:\s+player|\?|$)",
+    r"which\s+(team|player)\s+(?:has|had|scored|got)\s+(?:the\s+)?(most|highest|best|least|lowest|fewest)\s+(\w+)",
+    r"what\s+(?:is|was|are|were)\s+(.+?)(?:'s|'s)?\s+([\w\s]+?)(?:\s*$|\s*\?)",
+    r"^(.+?)\s+(goals|assists|xg|shots|passes|minutes|tackles|interceptions)$",
+]
+
+SEMANTIC_PATTERNS = [
+    r"how\s+did\s+(.+?)\s+play",
+    r"tell\s+me\s+about\s+(.+)",
+    r"describe\s+(.+)",
+    r"what\s+happened\s+in\s+(.+)",
+    r"explain\s+(.+)",
+    r"compare\s+(.+?)\s+and\s+(.+)",
+]
+
+STRUCTURED_KEYWORDS = {
+    "most", "highest", "best", "least", "lowest", "fewest", "top", "bottom",
+    "average", "total", "sum", "count", "how many", "how much",
+    "goals", "assists", "xg", "shots", "passes", "minutes", "tackles",
+    "interceptions", "clearances", "pressures", "carries",
+}
+
+SEMANTIC_KEYWORDS = {
+    "how", "why", "explain", "describe", "tell me", "what happened",
+    "play", "performance", "style", "strategy", "tactics", "formation",
+    "compare", "difference", "similar", "better", "worse",
+}
+
+
+def classify_query(query: str) -> tuple[str, float]:
+    """Classify a query as "structured", "semantic", or "hybrid"."""
+    query_lower = query.lower().strip()
+
+    for pattern in STRUCTURED_PATTERNS:
+        if re.search(pattern, query_lower):
+            return "structured", 0.9
+
+    if _detect_comparison(query):
+        return "hybrid", 0.9
+
+    for pattern in SEMANTIC_PATTERNS:
+        if re.search(pattern, query_lower):
+            return "semantic", 0.9
+
+    structured_score = sum(1 for kw in STRUCTURED_KEYWORDS if kw in query_lower)
+    semantic_score = sum(1 for kw in SEMANTIC_KEYWORDS if kw in query_lower)
+
+    total = structured_score + semantic_score
+    if total == 0:
+        return "semantic", 0.5
+
+    structured_pct = structured_score / total
+    semantic_pct = semantic_score / total
+
+    if structured_pct > 0.7:
+        return "structured", structured_pct
+    elif semantic_pct > 0.7:
+        return "semantic", semantic_pct
+    else:
+        return "hybrid", 0.6
+
+
+def parse_structured_query(query: str) -> StructuredQuery | None:
+    """Parse a query into a StructuredQuery if possible."""
+    query_lower = query.lower().strip()
+
+    stage_filter = _extract_stage_filter(query)
+    opponent_filter = _extract_opponent_filter(query)
+    filters = [f for f in [stage_filter, opponent_filter] if f is not None]
+
+    # Pattern: "how many <metric> did <player> score/have"
+    match = re.search(
+        r"how\s+many\s+(\w+)\s+(?:did|does|has|have)\s+(.+?)(?:\s+score|\s+have|\s+get|\?|$)",
+        query_lower
+    )
+    if match:
+        metric_raw, player_raw = match.groups()
+        metric = resolve_metric(metric_raw)
+        if metric:
+            return StructuredQuery(intent="numeric", entity="player", metric=metric,
+                                   aggregation="sum", entity_name=player_raw.strip().title(),
+                                   filters=filters)
+        else:
+            return StructuredQuery(intent="numeric", entity="player", metric=metric_raw,
+                                   aggregation="sum", entity_name=player_raw.strip().title(),
+                                   filters=filters)
+
+    # Pattern: "how many <multi-word metric> did <player> score/have"
+    match = re.search(
+        r"how\s+many\s+([\w\s]+?)\s+(?:did|does|has|have)\s+(.+?)(?:\s+score|\s+have|\s+get|\?|$)",
+        query_lower
+    )
+    if match:
+        metric_raw, player_raw = match.groups()
+        metric = resolve_metric(metric_raw.strip())
+        if metric:
+            return StructuredQuery(intent="numeric", entity="player", metric=metric,
+                                   aggregation="sum", entity_name=player_raw.strip().title(),
+                                   filters=filters)
+        else:
+            return StructuredQuery(intent="numeric", entity="player", metric=metric_raw.strip(),
+                                   aggregation="sum", entity_name=player_raw.strip().title(),
+                                   filters=filters)
+
+    # Pattern: "who scored the most <metric>"
+    match = re.search(
+        r"who\s+(?:has\s+the|had\s+the|scored\s+the|got\s+the)?\s*(most|highest|best|least|lowest|fewest)\s+(\w+)",
+        query_lower
+    )
+    if match:
+        agg_raw, metric_raw = match.groups()
+        metric = resolve_metric(metric_raw)
+        agg = resolve_aggregation(agg_raw)
+        if metric and agg:
+            return StructuredQuery(intent="superlative", entity="player", metric=metric,
+                                   aggregation=agg, limit=1, filters=filters)
+
+    # Pattern: "who was the most <metric> player"
+    match = re.search(
+        r"who\s+(?:was|is|were|are)\s+(?:the\s+)?(most|highest|best|least|lowest|fewest)\s+([\w\s]+?)(?:\s+player|\?|$)",
+        query_lower
+    )
+    if match:
+        agg_raw, metric_raw = match.groups()
+        metric = resolve_metric(metric_raw.strip())
+        agg = resolve_aggregation(agg_raw)
+        if metric and agg:
+            return StructuredQuery(intent="superlative", entity="player", metric=metric,
+                                   aggregation=agg, limit=1, filters=filters)
+        else:
+            return StructuredQuery(intent="superlative", entity="player",
+                                   metric=metric_raw.strip() if metric_raw else "unknown",
+                                   aggregation=agg or "max", limit=1, filters=filters)
+
+    # Pattern: "which team had the highest <metric>"
+    match = re.search(
+        r"which\s+(team|player)\s+(?:has|had|scored|got|relied|used|played)\s+(?:the\s+)?(most|highest|best|least|lowest|fewest)\s+(?:on\s+)?(\w+)",
+        query_lower
+    )
+    if match:
+        entity_raw, agg_raw, metric_raw = match.groups()
+        metric = resolve_metric(metric_raw)
+        agg = resolve_aggregation(agg_raw)
+        entity = "team" if entity_raw == "team" else "player"
+        if metric and agg:
+            return StructuredQuery(intent="superlative", entity=entity, metric=metric,
+                                   aggregation=agg, limit=1, filters=filters)
+
+    # Pattern: "<player> <metric>"
+    match = re.search(r"^(.+?)\s+(goals|assists|xg|shots|passes|minutes|tackles|interceptions)$", query_lower)
+    if match:
+        player_raw, metric_raw = match.groups()
+        metric = resolve_metric(metric_raw)
+        if metric:
+            return StructuredQuery(intent="numeric", entity="player", metric=metric,
+                                   aggregation="sum", entity_name=player_raw.strip().title(),
+                                   filters=filters)
+
+    # Pattern: "what is <player>'s <metric>"
+    match = re.search(
+        r"what\s+(?:is|was|are|were)\s+(.+?)(?:'s|'s)?\s+([\w\s]+?)(?:\s*$|\s*\?)",
+        query_lower
+    )
+    if match:
+        player_raw, metric_raw = match.groups()
+        metric = resolve_metric(metric_raw.strip())
+        if metric:
+            return StructuredQuery(intent="numeric", entity="player", metric=metric,
+                                   aggregation="sum", entity_name=player_raw.strip().title(),
+                                   filters=filters)
+        else:
+            return StructuredQuery(intent="numeric", entity="player", metric=metric_raw.strip(),
+                                   aggregation="sum", entity_name=player_raw.strip().title(),
+                                   filters=filters)
+
+    return None
+
+
+def route_query(query: str) -> Route:
+    """Determine the routing for a query."""
+    classification, confidence = classify_query(query)
+
+    if classification == "structured":
+        structured_query = parse_structured_query(query)
+        if structured_query:
+            return Route(path="structured", confidence=confidence,
+                         reason=f"Query matches structured pattern: {structured_query.intent}",
+                         structured_query=structured_query)
+        return Route(path="semantic", confidence=0.6,
+                     reason="Query appears structured but couldn't be parsed or validated",
+                     semantic_query=query)
+
+    elif classification == "semantic":
+        return Route(path="semantic", confidence=confidence,
+                     reason="Query is descriptive/qualitative",
+                     semantic_query=query)
+
+    else:  # hybrid
+        structured_query = parse_structured_query(query)
+        return Route(path="hybrid", confidence=confidence,
+                     reason="Query has both structured and semantic components",
+                     structured_query=structured_query,
+                     semantic_query=query)
+
+
+def execute_route(route: Route, semantic_k: int = 3) -> RoutedResult:
+    """Execute a routed query, returning structured and/or semantic results."""
+    structured_result = None
+    semantic_chunks = None
+    context = ""
+
+    # For hybrid comparison queries, run structured queries for each entity
+    comparison_entities = _detect_comparison(route.semantic_query or "")
+    if route.path == "hybrid" and comparison_entities:
+        entity_results = []
+        for entity_name in comparison_entities:
+            sq = StructuredQuery(intent="numeric", entity="player", metric="goals",
+                                 aggregation="sum", entity_name=entity_name)
+            try:
+                result = structured_resolve(sq)
+                entity_results.append((entity_name, result))
+            except Exception as e:
+                print(f"Structured resolution failed for {entity_name}: {e}")
+
+        if entity_results:
+            parts = []
+            for name, result in entity_results:
+                if result.status in ("resolved", "partial"):
+                    parts.append(f"{name}: {result.explanation}")
+                else:
+                    parts.append(f"{name}: No data available")
+
+            class _CombinedResult:
+                def __init__(self, explanation):
+                    self.status = "resolved"
+                    self.explanation = explanation
+                    self.aggregated_value = None
+                    self.data = []
+                    self.dropped_filters = []
+
+            structured_result = _CombinedResult(" | ".join(parts))
+
+    elif route.path in ("structured", "hybrid") and route.structured_query:
+        try:
+            structured_result = structured_resolve(route.structured_query)
+        except Exception as e:
+            print(f"Structured resolution failed: {e}")
+
+        if structured_result is not None and structured_result.status == "empty":
+            try:
+                fallback_chunks = hybrid_search(route.semantic_query or route.structured_query.entity_name or "", k=semantic_k)
+                if fallback_chunks:
+                    fallback_context = (
+                        "NOTE: The structured data did not contain a direct answer to this question. "
+                        "The following context is from related documents and may or may not be relevant. "
+                        "Only answer if the context clearly and specifically addresses the original question. "
+                        "If the context does not clearly answer the question, state that the data does not "
+                        "contain a direct answer.\n\n"
+                    )
+                    context = fallback_context + build_context(fallback_chunks)
+                    semantic_chunks = fallback_chunks
+            except Exception as e:
+                print(f"Semantic fallback failed: {e}")
+
+    if route.path in ("semantic", "hybrid"):
+        try:
+            semantic_chunks = hybrid_search(route.semantic_query or "", k=semantic_k)
+            context = build_context(semantic_chunks)
+        except Exception as e:
+            print(f"Semantic search failed: {e}")
+
+    explanation = f"Routed to {route.path} path (confidence: {route.confidence:.2f}). "
+    if structured_result:
+        explanation += f"Structured: {structured_result.explanation} "
+    if semantic_chunks:
+        explanation += f"Semantic: {len(semantic_chunks)} chunks retrieved."
+
+    return RoutedResult(route=route, structured_result=structured_result,
+                        semantic_chunks=semantic_chunks, context=context,
+                        explanation=explanation)
+
+
+def route_and_execute(query: str, semantic_k: int = 3) -> RoutedResult:
+    """Route and execute a query in one step."""
+    route = route_query(query)
+    return execute_route(route, semantic_k)
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -820,32 +1230,42 @@ def retrieve_context(
 def main() -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Hybrid retrieval test")
-    parser.add_argument("query", help="Search query")
-    parser.add_argument("--k", type=int, default=5, help="Number of results")
-    parser.add_argument("--mode", choices=["hybrid", "semantic"], default="hybrid",
-                        help="Retrieval mode")
-    parser.add_argument("--level", help="Filter by document level")
-    parser.add_argument("--max-length", type=int, default=3000,
-                        help="Max context length")
+    parser = argparse.ArgumentParser(description="Query routing and retrieval")
+    parser.add_argument("query", help="User query")
+    parser.add_argument("--k", type=int, default=5, help="Number of semantic results")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     args = parser.parse_args()
 
     print(f"Query: {args.query}")
-    print(f"Mode: {args.mode}")
-    print(f"Retrieving {args.k} chunks...")
     print()
 
-    result = retrieve_context(
-        args.query,
-        k=args.k,
-        max_length=args.max_length,
-        level_filter=args.level,
-        mode=args.mode,
-    )
+    route = route_query(args.query)
+    print(f"Route: {route.path} (confidence: {route.confidence:.2f})")
+    print(f"Reason: {route.reason}")
 
-    print(f"Retrieved {result['num_chunks']} chunks:")
-    print("=" * 60)
-    print(result["context"])
+    if args.verbose:
+        if route.structured_query:
+            print(f"Structured query: {route.structured_query.to_dict()}")
+        if route.semantic_query:
+            print(f"Semantic query: {route.semantic_query}")
+    print()
+
+    result = execute_route(route, args.k)
+    print(result.explanation)
+
+    if result.structured_result:
+        print(f"\nStructured result:")
+        print(f"  Status: {result.structured_result.status}")
+        if result.structured_result.aggregated_value is not None:
+            print(f"  Value: {result.structured_result.aggregated_value}")
+        print(f"  Explanation: {result.structured_result.explanation}")
+
+    if result.semantic_chunks:
+        print(f"\nSemantic results ({len(result.semantic_chunks)} chunks):")
+        for i, chunk in enumerate(result.semantic_chunks[:3]):
+            score = chunk.get('rrf_score', chunk.get('score', 0))
+            print(f"  {i+1}. [{chunk['metadata'].get('level')}] Score: {score:.4f}")
+            print(f"     {chunk['text'][:100]}...")
 
     return 0
 

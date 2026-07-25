@@ -1,5 +1,5 @@
 """
-06_create_chroma_store.py — Phase 4: ChromaDB Vector Store
+05_create_chroma_store.py — Phase 4: ChromaDB Vector Store
 
 Creates persistent ChromaDB collection for semantic retrieval.
 

@@ -1,12 +1,13 @@
 """
-app.py — Streamlit UI for FIFA World Cup 2022 RAG System
+streamlit_app.py — Streamlit UI for FIFA World Cup 2022 RAG System
 
 Usage:
-    streamlit run app.py
+    streamlit run streamlit_app.py
 """
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -29,6 +30,26 @@ if css_path.exists():
     st.markdown(f"<style>{css_path.read_text()}</style>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
+# Secrets Fallback
+# ---------------------------------------------------------------------------
+# Professor's required pattern: read from st.secrets first, fall back to env.
+# Uses OPENROUTER_API_KEY in secrets.toml (mapped to GROQ_API_KEY in code).
+
+try:
+    if not os.environ.get("GROQ_API_KEY"):
+        os.environ["GROQ_API_KEY"] = st.secrets.get("OPENROUTER_API_KEY", "")
+    if not os.environ.get("GROQ_API_URL"):
+        os.environ["GROQ_API_URL"] = st.secrets.get("OPENROUTER_API_URL", "")
+except Exception:
+    pass
+
+# Also set the model from secrets if available
+try:
+    _default_model = st.secrets.get("OPENROUTER_MODEL", "llama-3.3-70b-versatile")
+except Exception:
+    _default_model = "llama-3.3-70b-versatile"
+
+# ---------------------------------------------------------------------------
 # Module Loading (cached)
 # ---------------------------------------------------------------------------
 
@@ -45,12 +66,10 @@ def load_modules():
         spec.loader.exec_module(mod)
         return mod
 
-    router = _import("router", "08_router.py")
-    prompt_builder = _import("prompt_builder", "src/generation/prompt_builder.py")
-    llm = _import("llm", "src/generation/llm.py")
-    retrieve = _import("retrieve", "07_retrieve_context.py")
+    retrieve = _import("retrieve", "06_retrieve_context.py")
+    prompting = _import("prompting", "07_prompting.py")
 
-    return router, prompt_builder, llm, retrieve
+    return retrieve, prompting
 
 
 @st.cache_resource
@@ -114,26 +133,16 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # API configuration
+    # API configuration (manual override for local dev)
     st.subheader("API Configuration")
     api_key = st.text_input(
         "Groq API Key",
         type="password",
-        help="Required for LLM generation",
+        help="Override for local dev. Leave blank to use st.secrets.",
         value="",
     )
-    api_url = st.text_input(
-        "API URL",
-        value="https://api.groq.com/openai/v1/chat/completions",
-        help="Groq API endpoint",
-    )
-
     if api_key:
-        import os
         os.environ["GROQ_API_KEY"] = api_key
-    if api_url:
-        import os
-        os.environ["GROQ_API_URL"] = api_url
 
     st.markdown("---")
 
@@ -156,7 +165,7 @@ st.markdown("Ask questions about the 2022 FIFA World Cup. The system retrieves r
 
 # Load modules
 try:
-    router, prompt_builder, llm, retrieve = load_modules()
+    retrieve, prompting = load_modules()
 except Exception as e:
     st.error(f"Failed to load pipeline modules: {e}")
     st.stop()
@@ -187,9 +196,9 @@ if query := st.chat_input("Ask about FIFA World Cup 2022..."):
         with st.spinner("Retrieving and generating..."):
             t0 = time.time()
 
-            # Route
-            route = router.route_query(query)
-            result = router.execute_route(route, semantic_k=k)
+            # Route + retrieve
+            route = retrieve.route_query(query)
+            result = retrieve.execute_route(route, semantic_k=k)
 
             # Build context
             parts = []
@@ -208,19 +217,19 @@ if query := st.chat_input("Ask about FIFA World Cup 2022..."):
                 )
             if result.semantic_chunks:
                 parts.append(
-                    prompt_builder.format_context_for_prompt(result.semantic_chunks)
+                    prompting.format_context_for_prompt(result.semantic_chunks)
                 )
 
             context = "\n\n".join(parts) if parts else "No relevant data found."
 
             # Build prompt
-            prompt = prompt_builder.build_prompt(
+            prompt = prompting.build_prompt(
                 query, context, has_structured=has_structured
             )
 
             # Generate answer
             try:
-                answer = llm.generate_answer(prompt, model=model)
+                answer = prompting.generate_answer(prompt, model=model)
             except Exception as e:
                 answer = f"**Error:** {e}\n\n**Retrieved Context:**\n{context[:1000]}"
 

@@ -28,7 +28,7 @@ def main() -> int:
     print(f"  Player-match facts:    {diag['total_player_facts']}")
     print(f"  Match facts:           {len(result['match_facts'])}")
     print(f"  Team-match facts:      {diag['total_team_facts']}")
-    print(f"  Card parity failures:  {diag['card_parity_failures'] or 'none'}")
+    print(f"  Card parity failures:  {diag['card_count_mismatches'] or 'none'}")
 
     output_path = persist(result)
     print(f"\nPersisted to {output_path.resolve()}")
