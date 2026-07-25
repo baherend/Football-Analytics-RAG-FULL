@@ -20,8 +20,18 @@ ENV/
 secrets.toml
 .streamlit/secrets.toml
 
-# Generated pipeline artifacts
-output/
+# Pipeline output — exclude files not needed at runtime
+output/processed_documents.json
+output/documents.json
+output/embeddings/
+output/indices/embeddings.npy
+output/indices/tfidf_matrix.pkl
+output/indices/tfidf_vectorizer.pkl
+output/indices/chunk_ids.json
+output/benchmark_before.json
+output/benchmark_after.json
+output/full_suite_results.json
+output/test_results.json
 
 # Raw data (download separately)
 open-data-master/

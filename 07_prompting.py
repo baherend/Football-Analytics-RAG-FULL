@@ -107,8 +107,11 @@ def answer_question(question: str, api_key: str | None = None,
 
     Returns (answer_string, list_of_sources).
     """
-    build_context = import_module("06_retrieve_context").build_context
-    context, sources = build_context(question)
+    retrieve = import_module("06_retrieve_context").retrieve_context
+    result = retrieve(question)
+    context = result["context"]
+    sources = result["chunks"]
+
     prompt = build_prompt(question, context)
 
     key = api_key or GROQ_API_KEY
