@@ -13,6 +13,5 @@ chromadb>=0.4.0
 # LLM Integration
 httpx>=0.24.0
 
-# Development
-pytest>=7.0.0
+# Web UI
 streamlit>=1.28.0

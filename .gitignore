@@ -20,15 +20,8 @@ ENV/
 secrets.toml
 .streamlit/secrets.toml
 
-# Generated artifacts (rebuildable)
+# Generated pipeline artifacts
 output/
-chroma_db/
-embeddings/
-indices/
-processed_documents.json
-chunks.json
-documents.json
-match_facts.json
 
 # Raw data (download separately)
 open-data-master/

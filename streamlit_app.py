@@ -1,176 +1,152 @@
 """
-streamlit_app.py — Streamlit UI for FIFA World Cup 2022 RAG System
+streamlit_app.py — Streamlit UI for FIFA World Cup 2022 RAG Assistant
+
+Connects to the RAG pipeline via 07_prompting.py.
+Reads API key from Streamlit secrets for deployment.
 
 Usage:
     streamlit run streamlit_app.py
 """
 
-from __future__ import annotations
-
-import os
-import sys
-import time
-from pathlib import Path
+from importlib import import_module
 
 import streamlit as st
+
+# ---------------------------------------------------------------------------
+# Load RAG module
+# ---------------------------------------------------------------------------
+
+rag = import_module("07_prompting")
+
+# Configure API key from Streamlit secrets
+try:
+    if not rag.GROQ_API_KEY:
+        rag.GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", "")
+    rag.GROQ_MODEL = st.secrets.get("GROQ_MODEL", rag.GROQ_MODEL)
+except Exception:
+    pass
 
 # ---------------------------------------------------------------------------
 # Page Config
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="Football Analytics RAG",
+    page_title="FIFA World Cup 2022 — RAG Assistant",
     page_icon="⚽",
     layout="wide",
 )
 
-# Load custom CSS
-css_path = Path("styles.css")
-if css_path.exists():
-    st.markdown(f"<style>{css_path.read_text()}</style>", unsafe_allow_html=True)
-
-# ---------------------------------------------------------------------------
-# Secrets Fallback
-# ---------------------------------------------------------------------------
-# Professor's required pattern: read from st.secrets first, fall back to env.
-# Uses OPENROUTER_API_KEY in secrets.toml (mapped to GROQ_API_KEY in code).
-
-try:
-    if not os.environ.get("GROQ_API_KEY"):
-        os.environ["GROQ_API_KEY"] = st.secrets.get("OPENROUTER_API_KEY", "")
-    if not os.environ.get("GROQ_API_URL"):
-        os.environ["GROQ_API_URL"] = st.secrets.get("OPENROUTER_API_URL", "")
-except Exception:
-    pass
-
-# Also set the model from secrets if available
-try:
-    _default_model = st.secrets.get("OPENROUTER_MODEL", "llama-3.3-70b-versatile")
-except Exception:
-    _default_model = "llama-3.3-70b-versatile"
-
-# ---------------------------------------------------------------------------
-# Module Loading (cached)
-# ---------------------------------------------------------------------------
-
-
-@st.cache_resource
-def load_modules():
-    """Load pipeline modules once."""
-    import importlib.util
-
-    def _import(name, path):
-        spec = importlib.util.spec_from_file_location(name, path)
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[name] = mod
-        spec.loader.exec_module(mod)
-        return mod
-
-    retrieve = _import("retrieve", "06_retrieve_context.py")
-    prompting = _import("prompting", "07_prompting.py")
-
-    return retrieve, prompting
-
-
-@st.cache_resource
-def load_data():
-    """Load match_facts.json once."""
-    import json
-    path = Path("output/match_facts.json")
-    if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Pipeline Status
-# ---------------------------------------------------------------------------
-
-
-def check_pipeline():
-    """Check which pipeline artifacts exist."""
-    artifacts = {
-        "match_facts.json": Path("output/match_facts.json").exists(),
-        "documents.json": Path("output/documents.json").exists(),
-        "chunks.json": Path("output/chunks.json").exists(),
-        "BM25 index": Path("output/indices/bm25.pkl").exists(),
-        "ChromaDB": Path("output/chroma_db/chroma.sqlite3").exists(),
+# Custom CSS for dark theme
+st.markdown("""
+<style>
+    .stApp {
+        background-color: #0B1220;
     }
-    return artifacts
-
+    [data-testid="stSidebar"] {
+        background-color: #0F1A2E;
+        border-right: 1px solid #1E293B;
+    }
+    h1, h2, h3, h4, h5, h6 {
+        color: #FFFFFF !important;
+    }
+    p, li, span, label {
+        color: #C9D1D9;
+    }
+    [data-testid="stMetric"] {
+        background-color: #1A2332;
+        border: 1px solid #2D3748;
+        border-radius: 12px;
+        padding: 16px;
+    }
+    [data-testid="stMetricValue"] {
+        color: #00C853 !important;
+        font-size: 28px !important;
+        font-weight: 700 !important;
+    }
+    [data-testid="stMetricLabel"] {
+        color: #8B95A5 !important;
+    }
+    [data-testid="stChatMessage"] {
+        background-color: #1A2332;
+        border: 1px solid #2D3748;
+        border-radius: 16px;
+        padding: 16px;
+        margin: 8px 0;
+    }
+    [data-testid="stChatInput"] {
+        background-color: #1A2332;
+        border: 2px solid #2D3748;
+        border-radius: 12px;
+        color: #FFFFFF;
+    }
+    [data-testid="stChatInput"]:focus-within {
+        border-color: #00C853;
+    }
+    .stButton > button {
+        background-color: #1A2332;
+        color: #FFFFFF;
+        border: 1px solid #2D3748;
+        border-radius: 8px;
+        transition: all 0.2s;
+    }
+    .stButton > button:hover {
+        background-color: #2D3748;
+        border-color: #00C853;
+    }
+    [data-testid="stExpander"] {
+        background-color: #1A2332;
+        border: 1px solid #2D3748;
+        border-radius: 12px;
+    }
+    [data-testid="stExpander"] summary {
+        color: #00C853;
+        font-weight: 600;
+    }
+    code {
+        background-color: #1A2332;
+        color: #00C853;
+        border-radius: 4px;
+        padding: 2px 6px;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
 
-
 with st.sidebar:
     st.title("⚽ Football Analytics")
     st.markdown("---")
 
-    # Pipeline status
-    st.subheader("Pipeline Status")
-    artifacts = check_pipeline()
-    for name, exists in artifacts.items():
-        icon = "✅" if exists else "❌"
-        st.markdown(f"{icon} {name}")
-
-    st.markdown("---")
-
-    # Settings
     st.subheader("Settings")
     model = st.selectbox(
         "LLM Model",
         ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it", "mixtral-8x7b-32768"],
         index=0,
     )
-    mode = st.selectbox(
-        "Query Mode",
-        ["hybrid", "structured", "semantic"],
-        index=0,
-    )
-    k = st.slider("Retrieved chunks (k)", 1, 10, 5)
+    k = st.slider("Sources to retrieve", 1, 5, 3)
 
     st.markdown("---")
-
-    # API configuration (manual override for local dev)
-    st.subheader("API Configuration")
-    api_key = st.text_input(
-        "Groq API Key",
-        type="password",
-        help="Override for local dev. Leave blank to use st.secrets.",
-        value="",
-    )
-    if api_key:
-        os.environ["GROQ_API_KEY"] = api_key
+    st.subheader("About")
+    st.markdown("""
+    This RAG assistant answers questions about the **FIFA World Cup 2022** using:
+    - **2,835+ documents** from StatsBomb open data
+    - **Hybrid retrieval** (BM25 + dense embeddings + RRF)
+    - **Groq LLM** for answer generation
+    """)
 
     st.markdown("---")
-
-    # Stats
-    data = load_data()
-    if data:
-        st.subheader("Data Stats")
-        st.metric("Player Records", len(data.get("player_match_facts", [])))
-        st.metric("Match Records", len(data.get("match_facts", [])))
-        st.metric("Team Records", len(data.get("team_match_facts", [])))
-
+    st.caption("Built with Streamlit · StatsBomb Open Data")
 
 # ---------------------------------------------------------------------------
-# Main Area
+# Main UI
 # ---------------------------------------------------------------------------
 
+st.title("⚽ FIFA World Cup 2022 — RAG Assistant")
+st.markdown("Ask questions about matches, players, and teams from the 2022 FIFA World Cup.")
 
-st.title("⚽ FIFA World Cup 2022 — Football Analytics RAG")
-st.markdown("Ask questions about the 2022 FIFA World Cup. The system retrieves relevant data and generates answers using structured facts and semantic search.")
-
-# Load modules
-try:
-    retrieve, prompting = load_modules()
-except Exception as e:
-    st.error(f"Failed to load pipeline modules: {e}")
-    st.stop()
-
-# Session state for chat history
+# Session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -178,103 +154,69 @@ if "messages" not in st.session_state:
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
-        if msg.get("route"):
-            with st.expander("Routing Details"):
-                st.json(msg["route"])
-        if msg.get("context"):
-            with st.expander("Retrieved Context"):
-                st.text(msg["context"][:2000])
+        if msg.get("sources"):
+            with st.expander("📚 Sources"):
+                for src in msg["sources"]:
+                    meta = src.get("metadata", {})
+                    st.markdown(f"**[{meta.get('level', '?')}]** {src['text'][:300]}...")
+                    st.caption(f"Score: {src.get('rrf_score', src.get('score', 0)):.4f}")
 
 # Chat input
-if query := st.chat_input("Ask about FIFA World Cup 2022..."):
-    # Display user message
+if question := st.chat_input("Ask about the FIFA World Cup 2022..."):
+    # Show user message
     with st.chat_message("user"):
-        st.markdown(query)
+        st.markdown(question)
 
-    # Process query
+    # Generate answer
     with st.chat_message("assistant"):
-        with st.spinner("Retrieving and generating..."):
-            t0 = time.time()
-
-            # Route + retrieve
-            route = retrieve.route_query(query)
-            result = retrieve.execute_route(route, semantic_k=k)
-
-            # Build context
-            parts = []
-            has_structured = False
-            sr = result.structured_result
-            if sr and sr.status in ("resolved", "partial") and sr.explanation:
-                parts.append(
-                    "## Authoritative Data (Verified from Match Facts)\n\n"
-                    f"{sr.explanation}"
-                )
-                has_structured = True
-            elif sr and sr.status == "empty":
-                parts.append(
-                    "NOTE: The structured data did not contain a direct answer. "
-                    "Only answer if the context clearly addresses the question."
-                )
-            if result.semantic_chunks:
-                parts.append(
-                    prompting.format_context_for_prompt(result.semantic_chunks)
-                )
-
-            context = "\n\n".join(parts) if parts else "No relevant data found."
-
-            # Build prompt
-            prompt = prompting.build_prompt(
-                query, context, has_structured=has_structured
+        with st.spinner("Retrieving context and generating answer..."):
+            answer, sources = rag.answer_question(
+                question,
+                api_key=rag.GROQ_API_KEY,
+                model=model,
             )
-
-            # Generate answer
-            try:
-                answer = prompting.generate_answer(prompt, model=model)
-            except Exception as e:
-                answer = f"**Error:** {e}\n\n**Retrieved Context:**\n{context[:1000]}"
-
-            elapsed = time.time() - t0
-
-            # Display answer
             st.markdown(answer)
 
-            # Display metadata
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Route", route.path)
-            col2.metric("Confidence", f"{route.confidence:.2f}")
-            col3.metric("Time", f"{elapsed:.1f}s")
+            if sources:
+                with st.expander("📚 Sources"):
+                    for src in sources:
+                        meta = src.get("metadata", {})
+                        level = meta.get("level", "?")
+                        player = meta.get("player_name", "")
+                        team = meta.get("team_name", "")
+                        label = f"Level {level}"
+                        if player:
+                            label += f" · {player}"
+                        if team:
+                            label += f" · {team}"
+                        st.markdown(f"**[{label}]**")
+                        st.markdown(f"> {src['text'][:400]}")
+                        score_key = "rrf_score" if "rrf_score" in src else "score"
+                        st.caption(f"Relevance score: {src.get(score_key, 0):.4f}")
 
-            # Store in history
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": answer,
-                "route": {
-                    "path": route.path,
-                    "confidence": route.confidence,
-                    "reason": route.reason,
-                },
-                "context": context,
-            })
-
-    # Store user message
+    # Store messages
+    st.session_state.messages.append({"role": "user", "content": question})
     st.session_state.messages.append({
-        "role": "user",
-        "content": query,
+        "role": "assistant",
+        "content": answer,
+        "sources": sources,
     })
 
-# Example questions
+# Example questions (shown when chat is empty)
 if not st.session_state.messages:
     st.markdown("---")
-    st.markdown("**Example Questions:**")
+    st.markdown("### 💡 Example Questions")
     examples = [
-        "How many goals did Messi score?",
-        "Who scored the most goals in the tournament?",
+        "How many goals did Messi score in the tournament?",
+        "Who scored the most goals?",
         "Compare Messi and Mbappé's performance",
         "How did France play in the final?",
+        "What was Argentina's playing style?",
         "Who had the highest xG?",
-        "Argentina vs France in the Final",
     ]
-    for ex in examples:
-        if st.button(ex, key=ex):
-            st.session_state.messages.append({"role": "user", "content": ex})
-            st.rerun()
+    cols = st.columns(2)
+    for i, ex in enumerate(examples):
+        with cols[i % 2]:
+            if st.button(ex, key=f"ex_{i}", use_container_width=True):
+                st.session_state.messages.append({"role": "user", "content": ex})
+                st.rerun()

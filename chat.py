@@ -168,7 +168,7 @@ def process_query(question: str) -> str:
     # Step 6: Validate answer against structured facts
     if sr and sr.status in ("resolved", "partial") and sr.explanation:
         try:
-            from prompting import validate_answer
+            from src.generation.validator import validate_answer
             validation = validate_answer(
                 llm_answer=answer,
                 structured_explanation=sr.explanation,
