@@ -32,40 +32,37 @@ def split_sentences(text: str) -> list[str]:
     return [s.strip() for s in SENTENCE_END.split(text) if s.strip()]
 
 
+def _make_chunk(doc: dict, chunk_idx: int, chunk_text: str) -> dict:
+    """
+    Build a single chunk dict for a document.
+
+    This is the one place that defines what a "chunk" looks like — every
+    call site below (short doc, no-sentences fallback, mid-loop, final
+    leftover) goes through here instead of repeating the same dict literal.
+    """
+    doc_id = doc["document_id"]
+    return {
+        "chunk_id": f"{doc_id}-chunk-{chunk_idx}",
+        "document_id": doc_id,
+        "level": doc.get("level", "unknown"),
+        "match_id": doc.get("match_id"),
+        "player_name": doc.get("player_name"),
+        "team_name": doc.get("team_name"),
+        "text": chunk_text,
+        "search_text": chunk_text,
+        "metadata": doc.get("metadata", {}),
+    }
+
+
 def chunk_document(doc: dict, max_size: int = MAX_CHUNK_SIZE,
                    overlap: int = CHUNK_OVERLAP) -> list[dict]:
     """Split a document into chunks."""
     text = doc.get("cleaned_text") or doc.get("text", "")
-    doc_id = doc["document_id"]
-    level = doc.get("level", "unknown")
 
-    # Short document — single chunk
-    if len(text) <= max_size:
-        return [{
-            "chunk_id": f"{doc_id}-chunk-0",
-            "document_id": doc_id,
-            "level": level,
-            "match_id": doc.get("match_id"),
-            "player_name": doc.get("player_name"),
-            "team_name": doc.get("team_name"),
-            "text": text,
-            "search_text": text,
-            "metadata": doc.get("metadata", {}),
-        }]
-
-    sentences = split_sentences(text)
-    if not sentences:
-        return [{
-            "chunk_id": f"{doc_id}-chunk-0",
-            "document_id": doc_id,
-            "level": level,
-            "match_id": doc.get("match_id"),
-            "player_name": doc.get("player_name"),
-            "team_name": doc.get("team_name"),
-            "text": text,
-            "search_text": text,
-            "metadata": doc.get("metadata", {}),
-        }]
+    # Short document, or no sentence boundaries found — single chunk.
+    sentences = split_sentences(text) if len(text) > max_size else []
+    if len(text) <= max_size or not sentences:
+        return [_make_chunk(doc, 0, text)]
 
     chunks = []
     current_chunk = []
@@ -77,20 +74,10 @@ def chunk_document(doc: dict, max_size: int = MAX_CHUNK_SIZE,
 
         if current_length + sentence_len > max_size and current_chunk:
             chunk_text = " ".join(current_chunk)
-            chunks.append({
-                "chunk_id": f"{doc_id}-chunk-{chunk_idx}",
-                "document_id": doc_id,
-                "level": level,
-                "match_id": doc.get("match_id"),
-                "player_name": doc.get("player_name"),
-                "team_name": doc.get("team_name"),
-                "text": chunk_text,
-                "search_text": chunk_text,
-                "metadata": doc.get("metadata", {}),
-            })
+            chunks.append(_make_chunk(doc, chunk_idx, chunk_text))
             chunk_idx += 1
 
-            if overlap > 0 and current_chunk:
+            if overlap > 0:
                 overlap_text = current_chunk[-1]
                 current_chunk = [overlap_text]
                 current_length = len(overlap_text)
@@ -103,17 +90,7 @@ def chunk_document(doc: dict, max_size: int = MAX_CHUNK_SIZE,
 
     if current_chunk:
         chunk_text = " ".join(current_chunk)
-        chunks.append({
-            "chunk_id": f"{doc_id}-chunk-{chunk_idx}",
-            "document_id": doc_id,
-            "level": level,
-            "match_id": doc.get("match_id"),
-            "player_name": doc.get("player_name"),
-            "team_name": doc.get("team_name"),
-            "text": chunk_text,
-            "search_text": chunk_text,
-            "metadata": doc.get("metadata", {}),
-        })
+        chunks.append(_make_chunk(doc, chunk_idx, chunk_text))
 
     return chunks
 

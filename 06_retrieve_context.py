@@ -86,7 +86,7 @@ def _load_chunks() -> list[dict]:
 
 
 def _get_tokenizer():
-    """Get the BM25 tokenizer (same as 04_representation.py)."""
+    """Get the BM25 tokenizer."""
     import re
 
     def simple_tokenize(text: str) -> list[str]:
@@ -816,7 +816,7 @@ def retrieve_context(
 
 # ---------------------------------------------------------------------------
 # Query Router — Classification + Parsing + Execution
-# (merged from 08_router.py)
+# Query Router
 # ---------------------------------------------------------------------------
 
 from dataclasses import dataclass, field
