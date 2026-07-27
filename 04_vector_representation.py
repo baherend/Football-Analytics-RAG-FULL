@@ -49,10 +49,12 @@ def _build_bm25(chunks: list[dict]) -> BM25Okapi:
     return BM25Okapi(tokenized)
 
 
-def _build_embeddings(chunks: list[dict], model_name: str = MODEL_NAME) -> np.ndarray:
+def _build_embeddings(chunks: list[dict], model=None,
+                      model_name: str = MODEL_NAME) -> np.ndarray:
     """Generate sentence embeddings for all chunks."""
-    from sentence_transformers import SentenceTransformer
-    model = SentenceTransformer(model_name)
+    if model is None:
+        from sentence_transformers import SentenceTransformer
+        model = SentenceTransformer(model_name)
     texts = [c.get("search_text", c["text"]) for c in chunks]
     return model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
 
@@ -105,14 +107,14 @@ def _ensure_loaded():
     else:
         _bm25 = _build_bm25(_chunks)
 
-    # Try loading pre-built embeddings
+    _model = SentenceTransformer(MODEL_NAME)
+
+    # Try loading pre-built embeddings (must come after _model is set)
     embeddings_path = Path("output/embeddings/embeddings.npy")
     if embeddings_path.exists():
         _chunk_embeddings = np.load(embeddings_path)
     else:
-        _chunk_embeddings = _build_embeddings(_chunks)
-
-    _model = SentenceTransformer(MODEL_NAME)
+        _chunk_embeddings = _build_embeddings(_chunks, model=_model)
 
 
 def hybrid_search(query: str, k: int = 5) -> list[dict]:
@@ -123,14 +125,12 @@ def hybrid_search(query: str, k: int = 5) -> list[dict]:
     """
     _ensure_loaded()
 
-    clean_query = query  # preprocessing is optional for search
-
     # BM25 scores
-    bm25_scores = _bm25.get_scores(simple_tokenize(clean_query))
+    bm25_scores = _bm25.get_scores(simple_tokenize(query))
 
     # Dense scores
     query_embedding = _model.encode(
-        [clean_query], convert_to_numpy=True, normalize_embeddings=True
+        [query], convert_to_numpy=True, normalize_embeddings=True
     )
     embedding_scores = np.dot(_chunk_embeddings, query_embedding.T).flatten()
 
