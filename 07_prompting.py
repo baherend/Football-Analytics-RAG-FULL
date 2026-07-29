@@ -103,14 +103,17 @@ def ask_groq(prompt: str, api_key: str | None = None,
 def answer_question(question: str, api_key: str | None = None,
                     model: str | None = None) -> tuple[str, list[dict]]:
     """
-    End-to-end: retrieve context, build prompt, generate answer.
+    End-to-end: route query, retrieve context, build prompt, generate answer.
+
+    Uses structured routing when applicable (e.g. "Who scored the most goals?"
+    → structured resolver), falls back to semantic retrieval otherwise.
 
     Returns (answer_string, list_of_sources).
     """
-    retrieve = import_module("06_retrieve_context").retrieve_context
-    result = retrieve(question)
-    context = result["context"]
-    sources = result["chunks"]
+    route_and_execute = import_module("06_retrieve_context").route_and_execute
+    result = route_and_execute(question)
+    context = result.context
+    sources = result.semantic_chunks or []
 
     prompt = build_prompt(question, context)
 

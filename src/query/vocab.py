@@ -67,6 +67,10 @@ REGISTERED_METRICS: dict[str, MetricSpec] = {
     "carry_distance":           MetricSpec("carry_distance", MetricKind.STORED, True),
     "pressures":                MetricSpec("pressures", MetricKind.STORED, True),
     "final_third_passes":       MetricSpec("final_third_passes", MetricKind.STORED, True),
+    "fouls_committed":          MetricSpec("fouls_committed", MetricKind.STORED, True),
+    "yellow_cards":             MetricSpec("yellow_cards", MetricKind.STORED, True),
+    "second_yellow_cards":      MetricSpec("second_yellow_cards", MetricKind.STORED, True),
+    "red_cards":                MetricSpec("red_cards", MetricKind.STORED, True),
 
     # --- 2 ratios: period-sliceable via their components, NOT summable ---
     "pass_pct": MetricSpec(
@@ -117,6 +121,14 @@ METRIC_ALIASES: dict[str, str] = {
     "carry": "carries", "carries": "carries",
     "carry distance": "carry_distance",
     "pressure": "pressures", "pressures": "pressures",
+    "foul": "fouls_committed", "fouls": "fouls_committed",
+    "fouls committed": "fouls_committed", "committed fouls": "fouls_committed",
+    "yellow card": "yellow_cards", "yellow cards": "yellow_cards",
+    "booking": "yellow_cards", "bookings": "yellow_cards", "booked": "yellow_cards",
+    "second yellow": "second_yellow_cards", "second yellow card": "second_yellow_cards",
+    "second yellow cards": "second_yellow_cards",
+    "red card": "red_cards", "red cards": "red_cards",
+    "sent off": "red_cards", "dismissed": "red_cards", "dismissals": "red_cards",
     "final third pass": "final_third_passes", "final third passes": "final_third_passes",
     "ball loss": "ball_losses", "ball losses": "ball_losses", "turnovers": "ball_losses",
     "minute": "minutes", "minutes": "minutes",
@@ -326,6 +338,12 @@ PLAYER_NUMERIC_METRICS = {
     "carries": {"description": "Ball carries", "type": "int", "min": 0},
     "carry_distance": {"description": "Total carry distance (yards)", "type": "float", "min": 0.0},
 
+    # Discipline
+    "fouls_committed": {"description": "Fouls committed", "type": "int", "min": 0},
+    "yellow_cards": {"description": "Yellow cards", "type": "int", "min": 0},
+    "second_yellow_cards": {"description": "Second yellow cards (dismissal)", "type": "int", "min": 0},
+    "red_cards": {"description": "Red cards (direct)", "type": "int", "min": 0},
+
     # Playing time
     "minutes": {"description": "Minutes played", "type": "float", "min": 0.0},
 }
@@ -481,6 +499,27 @@ METRIC_SYNONYMS = {
     "crosses": "crosses",
     "cross": "crosses",
     "crossing": "crosses",
+    # Fouls
+    "fouls": "fouls_committed",
+    "foul": "fouls_committed",
+    "fouls committed": "fouls_committed",
+    "committed fouls": "fouls_committed",
+    # Yellow cards
+    "yellow cards": "yellow_cards",
+    "yellow card": "yellow_cards",
+    "bookings": "yellow_cards",
+    "booking": "yellow_cards",
+    "booked": "yellow_cards",
+    # Second yellow
+    "second yellow": "second_yellow_cards",
+    "second yellow card": "second_yellow_cards",
+    "second yellow cards": "second_yellow_cards",
+    # Red cards
+    "red cards": "red_cards",
+    "red card": "red_cards",
+    "sent off": "red_cards",
+    "dismissals": "red_cards",
+    "dismissed": "red_cards",
 }
 
 AGGREGATION_SYNONYMS = {

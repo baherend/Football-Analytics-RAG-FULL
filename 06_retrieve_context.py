@@ -933,9 +933,21 @@ class RoutedResult:
 STRUCTURED_PATTERNS = [
     r"how\s+many\s+(\w+)\s+(?:did|does|has|have)\s+(.+?)(?:\s+score|\s+have|\s+get|\?|$)",
     r"how\s+many\s+([\w\s]+?)\s+(?:did|does|has|have)\s+(.+?)(?:\s+score|\s+have|\s+get|\?|$)",
+    r"how\s+many\s+(?:total\s+)?(\w+)\s+(?:were|was|are|is)?\s*(?:scored|made|conceded)?\s*(?:in|at|during)\s+(?:the\s+)?(?:tournament|world\s+cup|competition)",
     r"who\s+(?:has\s+the|had\s+the|scored\s+the|got\s+the)?\s*(most|highest|best|least|lowest|fewest)\s+(\w+)",
     r"who\s+(?:was|is|were|are)\s+(?:the\s+)?(most|highest|best|least|lowest|fewest)\s+([\w\s]+?)(?:\s+player|\?|$)",
     r"which\s+(team|player)\s+(?:has|had|scored|got)\s+(?:the\s+)?(most|highest|best|least|lowest|fewest)\s+(\w+)",
+    r"(?:top|best|leading)\s+(scorer|goal\s*scorer|assists?|passer|tackler)",
+    # Direct fouls/cards patterns
+    r"(?:most|highest|fewest|least)\s+(fouls?|yellow\s*cards?|red\s*cards?|bookings?|cards?)",
+    r"who\s+(?:has|had|committed|got)\s+(?:the\s+)?(?:most|highest|fewest|least)\s+(fouls?|yellow\s*cards?|red\s*cards?|bookings?|cards?)",
+    r"who\s+(?:was|is)\s+(?:the\s+)?dirtiest\s+player",
+    r"how\s+many\s+(fouls?|yellow\s*cards?|red\s*cards?|bookings?)\s+(?:did|does|has|have)\s+(.+?)(?:\s+(?:get|have|commit|receive)|\s*$|\s*\?)",
+    # Aggression-proxy patterns (route structured, but answer MUST use proxy disclaimer)
+    r"(?:most|who\s+(?:was|is)\s+(?:the\s+)?)?\s*aggress(?:ive|ion)\s*(?:player)?",
+    r"who\s+(?:plays?|played)\s+(?:the\s+)?(?:most\s+)?aggressively",
+    r"(?:most|who\s+(?:was|is)\s+(?:the\s+)?)?\s*toug(?:h|est)\s*(?:player)?",
+    r"who\s+fouls?\s+(?:a\s+lot|much|often|frequently)",
     r"what\s+(?:is|was|are|were)\s+(.+?)(?:'s|'s)?\s+([\w\s]+?)(?:\s*$|\s*\?)",
     r"^(.+?)\s+(goals|assists|xg|shots|passes|minutes|tackles|interceptions)$",
 ]
@@ -954,6 +966,9 @@ STRUCTURED_KEYWORDS = {
     "average", "total", "sum", "count", "how many", "how much",
     "goals", "assists", "xg", "shots", "passes", "minutes", "tackles",
     "interceptions", "clearances", "pressures", "carries",
+    "fouls", "foul", "yellow card", "yellow cards", "red card", "red cards",
+    "bookings", "booked", "cards", "dirtiest", "aggressive", "aggression",
+    "toughest", "tough",
 }
 
 SEMANTIC_KEYWORDS = {
@@ -1038,6 +1053,21 @@ def parse_structured_query(query: str) -> StructuredQuery | None:
                                    aggregation="sum", entity_name=player_raw.strip().title(),
                                    filters=filters)
 
+    # Pattern: "most aggressive player" / "toughest player" / "who fouls a lot"
+    # MUST be checked BEFORE "who was the most <metric>" to avoid matching
+    # "aggressive" as an unknown metric.
+    # EXCLUDES queries with temporal/score-state qualifiers (e.g. "after Morocco's
+    # first goal") — those can't be answered from structured data and must fall
+    # through to semantic (honest refusal).
+    _has_temporal = re.search(r"\b(after|before|during|when|following|since)\b", query_lower)
+    if not _has_temporal and (
+        re.search(r"aggress(?:ive|ion)", query_lower) or
+        re.search(r"toug(?:h|est)\s*(?:player)?", query_lower) or
+        re.search(r"who\s+fouls?\s+(?:a\s+lot|much|often|frequently)", query_lower)
+    ):
+        return StructuredQuery(intent="superlative", entity="player", metric="fouls_committed",
+                               aggregation="max", limit=1, filters=filters)
+
     # Pattern: "who scored the most <metric>"
     match = re.search(
         r"who\s+(?:has\s+the|had\s+the|scored\s+the|got\s+the)?\s*(most|highest|best|least|lowest|fewest)\s+(\w+)",
@@ -1081,6 +1111,76 @@ def parse_structured_query(query: str) -> StructuredQuery | None:
         if metric and agg:
             return StructuredQuery(intent="superlative", entity=entity, metric=metric,
                                    aggregation=agg, limit=1, filters=filters)
+
+    # Pattern: "how many total <metric> in the tournament"
+    match = re.search(
+        r"how\s+many\s+(?:total\s+)?(\w+)\s+(?:were|was|are|is)?\s*(?:scored|made|conceded)?\s*(?:in|at|during)\s+(?:the\s+)?(?:tournament|world\s+cup|competition)",
+        query_lower
+    )
+    if match:
+        metric_raw = match.group(1)
+        metric = resolve_metric(metric_raw)
+        if metric:
+            return StructuredQuery(intent="numeric", entity="tournament", metric=metric,
+                                   aggregation="sum", filters=filters)
+
+    # Pattern: "top scorer" / "best passer" / "leading scorer"
+    match = re.search(
+        r"(?:top|best|leading)\s+(scorer|goal\s*scorer|assists?|passer|tackler)",
+        query_lower
+    )
+    if match:
+        metric_raw = match.group(1)
+        metric_map = {
+            "scorer": "goals", "goal scorer": "goals", "goals": "goals",
+            "assist": "assists", "assists": "assists",
+            "passer": "passes", "tackler": "tackles",
+        }
+        metric = metric_map.get(metric_raw, resolve_metric(metric_raw) or "goals")
+        return StructuredQuery(intent="superlative", entity="player", metric=metric,
+                               aggregation="max", limit=1, filters=filters)
+
+    # Pattern: "most fouls" / "most yellow cards" / "most red cards"
+    match = re.search(
+        r"(?:most|highest|fewest|least)\s+(fouls?|yellow\s*cards?|red\s*cards?|bookings?|cards?)",
+        query_lower
+    )
+    if match:
+        metric_raw = match.group(1).replace("  ", " ")
+        metric = resolve_metric(metric_raw)
+        if metric:
+            return StructuredQuery(intent="superlative", entity="player", metric=metric,
+                                   aggregation="max", limit=1, filters=filters)
+
+    # Pattern: "who committed the most fouls" / "who has the most yellow cards"
+    match = re.search(
+        r"who\s+(?:has|had|committed|got)\s+(?:the\s+)?(?:most|highest|fewest|least)\s+(fouls?|yellow\s*cards?|red\s*cards?|bookings?|cards?)",
+        query_lower
+    )
+    if match:
+        metric_raw = match.group(1)
+        metric = resolve_metric(metric_raw)
+        if metric:
+            return StructuredQuery(intent="superlative", entity="player", metric=metric,
+                                   aggregation="max", limit=1, filters=filters)
+
+    # Pattern: "dirtiest player" → fouls_committed as proxy
+    if re.search(r"dirtiest\s+player", query_lower):
+        return StructuredQuery(intent="superlative", entity="player", metric="fouls_committed",
+                               aggregation="max", limit=1, filters=filters)
+
+    # Pattern: "how many fouls did <player> have"
+    match = re.search(
+        r"how\s+many\s+(fouls?|yellow\s*cards?|red\s*cards?|bookings?)\s+(?:did|does|has|have)\s+(.+?)(?:\s+(?:get|have|commit|receive)|\s*$|\s*\?)",
+        query_lower
+    )
+    if match:
+        metric_raw, player_raw = match.groups()
+        metric = resolve_metric(metric_raw)
+        if metric:
+            return StructuredQuery(intent="numeric", entity="player", metric=metric,
+                                   aggregation="sum", entity_name=player_raw.strip().title(),
+                                   filters=filters)
 
     # Pattern: "<player> <metric>"
     match = re.search(r"^(.+?)\s+(goals|assists|xg|shots|passes|minutes|tackles|interceptions)$", query_lower)
@@ -1139,7 +1239,7 @@ def route_query(query: str) -> Route:
                      semantic_query=query)
 
 
-def execute_route(route: Route, semantic_k: int = 3) -> RoutedResult:
+def execute_route(route: Route, semantic_k: int = 3, original_query: str = "") -> RoutedResult:
     """Execute a routed query, returning structured and/or semantic results."""
     structured_result = None
     semantic_chunks = None
@@ -1182,7 +1282,20 @@ def execute_route(route: Route, semantic_k: int = 3) -> RoutedResult:
         except Exception as e:
             print(f"Structured resolution failed: {e}")
 
-        if structured_result is not None and structured_result.status == "empty":
+        if structured_result is not None and structured_result.status in ("resolved", "partial"):
+            context = structured_result.explanation or ""
+            # Aggression-proxy disclaimer: if the query was about "aggression" but
+            # we resolved via fouls_committed, prepend a disclaimer that there's
+            # no direct aggression metric.
+            if structured_result.query and structured_result.query.metric == "fouls_committed" and \
+               re.search(r"aggress|tough|dirtiest", original_query, re.IGNORECASE):
+                context = (
+                    "NOTE: There is no direct 'aggression' metric in the dataset. "
+                    "The closest available signal is fouls committed and card counts. "
+                    "Presenting fouls committed data as a proxy — this does not definitively "
+                    "measure playing style or intent.\n\n" + context
+                )
+        elif structured_result is not None and structured_result.status == "empty":
             try:
                 fallback_chunks = hybrid_search(route.semantic_query or route.structured_query.entity_name or "", k=semantic_k)
                 if fallback_chunks:
@@ -1219,7 +1332,7 @@ def execute_route(route: Route, semantic_k: int = 3) -> RoutedResult:
 def route_and_execute(query: str, semantic_k: int = 3) -> RoutedResult:
     """Route and execute a query in one step."""
     route = route_query(query)
-    return execute_route(route, semantic_k)
+    return execute_route(route, semantic_k, original_query=query)
 
 
 # ---------------------------------------------------------------------------

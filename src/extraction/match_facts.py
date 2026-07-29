@@ -108,6 +108,12 @@ class PlayerMatchFacts:
     pressures: int = 0
     final_third_passes: int = 0
 
+    # Discipline
+    fouls_committed: int = 0
+    yellow_cards: int = 0
+    second_yellow_cards: int = 0
+    red_cards: int = 0
+
     # Per-period breakdown (enables period-sliceable queries)
     # Key: period number (1-4) as string, Value: metric block
     by_period: dict = field(default_factory=dict)
@@ -598,6 +604,7 @@ def _compute_player_stats(events: list[dict], minutes: dict,
         "clearances": 0, "ball_losses": 0,
         "carries": 0, "carry_distance": 0.0,
         "pressures": 0, "final_third_passes": 0,
+        "fouls_committed": 0, "yellow_cards": 0, "second_yellow_cards": 0, "red_cards": 0,
     }
 
     # Per-period metric keys (the 17 event-level stored counts)
@@ -610,6 +617,7 @@ def _compute_player_stats(events: list[dict], minutes: dict,
         "clearances", "ball_losses",
         "carries", "carry_distance",
         "pressures", "final_third_passes",
+        "fouls_committed", "yellow_cards", "second_yellow_cards", "red_cards",
     ]
 
     def blank_period():
@@ -683,6 +691,26 @@ def _compute_player_stats(events: list[dict], minutes: dict,
 
         elif etype == "Pressure":
             block["pressures"] += 1
+
+        elif etype == "Foul Committed":
+            block["fouls_committed"] += 1
+
+        # Cards (from Foul Committed or Bad Behaviour)
+        if etype in ("Foul Committed", "Bad Behaviour"):
+            card = None
+            for cb in ("foul_committed", "bad_behaviour"):
+                c = (event.get(cb) or {}).get("card")
+                if c:
+                    card = c
+                    break
+            if card:
+                card_name = card.get("name", "")
+                if card_name == "Yellow Card":
+                    block["yellow_cards"] += 1
+                elif card_name == "Second Yellow":
+                    block["second_yellow_cards"] += 1
+                elif card_name == "Red Card":
+                    block["red_cards"] += 1
 
     for event in events:
         if not in_play(event) or "player" not in event:
@@ -826,6 +854,10 @@ def _extract_player_match_facts(
             carry_distance=row.get("carry_distance", 0.0),
             pressures=row.get("pressures", 0),
             final_third_passes=row.get("final_third_passes", 0),
+            fouls_committed=row.get("fouls_committed", 0),
+            yellow_cards=row.get("yellow_cards", 0),
+            second_yellow_cards=row.get("second_yellow_cards", 0),
+            red_cards=row.get("red_cards", 0),
             by_period=row.get("by_period", {}),
         ))
     return results
