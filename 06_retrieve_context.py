@@ -940,6 +940,8 @@ STRUCTURED_PATTERNS = [
     r"(?:top|best|leading)\s+(scorer|goal\s*scorer|assists?|passer|tackler)",
     # Direct fouls/cards patterns
     r"(?:most|highest|fewest|least)\s+(fouls?|yellow\s*cards?|red\s*cards?|bookings?|cards?)",
+    r"(?:which|who)\s+player\s+fouls?\s+(?:the\s+)?(?:most|least|often)",
+    r"who\s+fouls?\s+(?:the\s+)?(?:most|least|often)",
     r"who\s+(?:has|had|committed|got)\s+(?:the\s+)?(?:most|highest|fewest|least)\s+(fouls?|yellow\s*cards?|red\s*cards?|bookings?|cards?)",
     r"who\s+(?:was|is)\s+(?:the\s+)?dirtiest\s+player",
     r"how\s+many\s+(fouls?|yellow\s*cards?|red\s*cards?|bookings?)\s+(?:did|does|has|have)\s+(.+?)(?:\s+(?:get|have|commit|receive)|\s*$|\s*\?)",
@@ -1166,6 +1168,11 @@ def parse_structured_query(query: str) -> StructuredQuery | None:
 
     # Pattern: "dirtiest player" → fouls_committed as proxy
     if re.search(r"dirtiest\s+player", query_lower):
+        return StructuredQuery(intent="superlative", entity="player", metric="fouls_committed",
+                               aggregation="max", limit=1, filters=filters)
+
+    # Pattern: "which player fouls the most" / "who fouls the most"
+    if re.search(r"(?:which|who)\s+(?:player\s+)?fouls?\s+(?:the\s+)?(?:most|often)", query_lower):
         return StructuredQuery(intent="superlative", entity="player", metric="fouls_committed",
                                aggregation="max", limit=1, filters=filters)
 
