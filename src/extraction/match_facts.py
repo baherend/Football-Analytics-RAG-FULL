@@ -114,6 +114,14 @@ class PlayerMatchFacts:
     second_yellow_cards: int = 0
     red_cards: int = 0
 
+    # Goalkeeper metrics
+    saves: int = 0
+    goals_conceded: int = 0
+    penalties_saved: int = 0
+    claims: int = 0
+    punches: int = 0
+    sweeper_actions: int = 0
+
     # Per-period breakdown (enables period-sliceable queries)
     # Key: period number (1-4) as string, Value: metric block
     by_period: dict = field(default_factory=dict)
@@ -605,6 +613,8 @@ def _compute_player_stats(events: list[dict], minutes: dict,
         "carries": 0, "carry_distance": 0.0,
         "pressures": 0, "final_third_passes": 0,
         "fouls_committed": 0, "yellow_cards": 0, "second_yellow_cards": 0, "red_cards": 0,
+        "saves": 0, "goals_conceded": 0, "penalties_saved": 0,
+        "claims": 0, "punches": 0, "sweeper_actions": 0,
     }
 
     # Per-period metric keys (the 17 event-level stored counts)
@@ -618,6 +628,8 @@ def _compute_player_stats(events: list[dict], minutes: dict,
         "carries", "carry_distance",
         "pressures", "final_third_passes",
         "fouls_committed", "yellow_cards", "second_yellow_cards", "red_cards",
+        "saves", "goals_conceded", "penalties_saved",
+        "claims", "punches", "sweeper_actions",
     ]
 
     def blank_period():
@@ -691,6 +703,33 @@ def _compute_player_stats(events: list[dict], minutes: dict,
 
         elif etype == "Pressure":
             block["pressures"] += 1
+
+        elif etype == "Goal Keeper":
+            gk = event.get("goalkeeper", {})
+            gk_type = gk.get("type", {}).get("name", "")
+            gk_outcome = gk.get("outcome", {}).get("name", "")
+
+            # Saves: Shot Saved (any outcome) + Penalty Saved
+            if gk_type in ("Shot Saved", "Shot Saved to Post", "Penalty Saved"):
+                block["saves"] += 1
+                if gk_type == "Penalty Saved":
+                    block["penalties_saved"] += 1
+
+            # Goals conceded: Goal Conceded or Penalty Conceded (any outcome)
+            if gk_type in ("Goal Conceded", "Penalty Conceded"):
+                block["goals_conceded"] += 1
+
+            # Claims: Collected or Keeper Sweeper with Claim outcome
+            if gk_type == "Collected" or (gk_type == "Keeper Sweeper" and gk_outcome == "Claim"):
+                block["claims"] += 1
+
+            # Punches
+            if gk_type == "Punch":
+                block["punches"] += 1
+
+            # Sweeper actions: Keeper Sweeper (any outcome)
+            if gk_type == "Keeper Sweeper":
+                block["sweeper_actions"] += 1
 
         elif etype == "Foul Committed":
             block["fouls_committed"] += 1
@@ -858,6 +897,12 @@ def _extract_player_match_facts(
             yellow_cards=row.get("yellow_cards", 0),
             second_yellow_cards=row.get("second_yellow_cards", 0),
             red_cards=row.get("red_cards", 0),
+            saves=row.get("saves", 0),
+            goals_conceded=row.get("goals_conceded", 0),
+            penalties_saved=row.get("penalties_saved", 0),
+            claims=row.get("claims", 0),
+            punches=row.get("punches", 0),
+            sweeper_actions=row.get("sweeper_actions", 0),
             by_period=row.get("by_period", {}),
         ))
     return results

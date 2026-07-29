@@ -71,6 +71,12 @@ REGISTERED_METRICS: dict[str, MetricSpec] = {
     "yellow_cards":             MetricSpec("yellow_cards", MetricKind.STORED, True),
     "second_yellow_cards":      MetricSpec("second_yellow_cards", MetricKind.STORED, True),
     "red_cards":                MetricSpec("red_cards", MetricKind.STORED, True),
+    "saves":                    MetricSpec("saves", MetricKind.STORED, True),
+    "goals_conceded":           MetricSpec("goals_conceded", MetricKind.STORED, True),
+    "penalties_saved":          MetricSpec("penalties_saved", MetricKind.STORED, True),
+    "claims":                   MetricSpec("claims", MetricKind.STORED, True),
+    "punches":                  MetricSpec("punches", MetricKind.STORED, True),
+    "sweeper_actions":          MetricSpec("sweeper_actions", MetricKind.STORED, True),
 
     # --- 2 ratios: period-sliceable via their components, NOT summable ---
     "pass_pct": MetricSpec(
@@ -129,6 +135,17 @@ METRIC_ALIASES: dict[str, str] = {
     "second yellow cards": "second_yellow_cards",
     "red card": "red_cards", "red cards": "red_cards",
     "sent off": "red_cards", "dismissed": "red_cards", "dismissals": "red_cards",
+    # Goalkeeper metrics
+    "save": "saves", "saves": "saves", "stops": "saves", "shot saved": "saves",
+    "goals conceded": "goals_conceded", "goals let in": "goals_conceded",
+    "conceded": "goals_conceded",
+    "penalty save": "penalties_saved", "penalty saves": "penalties_saved",
+    "penalty saved": "penalties_saved", "saved penalty": "penalties_saved",
+    "saved penalties": "penalties_saved",
+    "claim": "claims", "claims": "claims", "collected": "claims",
+    "punch": "punches", "punches": "punches",
+    "sweeper": "sweeper_actions", "sweeper actions": "sweeper_actions",
+    "sweeper action": "sweeper_actions", "keeper sweeper": "sweeper_actions",
     "final third pass": "final_third_passes", "final third passes": "final_third_passes",
     "ball loss": "ball_losses", "ball losses": "ball_losses", "turnovers": "ball_losses",
     "minute": "minutes", "minutes": "minutes",
@@ -344,6 +361,14 @@ PLAYER_NUMERIC_METRICS = {
     "second_yellow_cards": {"description": "Second yellow cards (dismissal)", "type": "int", "min": 0},
     "red_cards": {"description": "Red cards (direct)", "type": "int", "min": 0},
 
+    # Goalkeeper
+    "saves": {"description": "Goalkeeper saves", "type": "int", "min": 0},
+    "goals_conceded": {"description": "Goals conceded while in goal", "type": "int", "min": 0},
+    "penalties_saved": {"description": "Penalties saved", "type": "int", "min": 0},
+    "claims": {"description": "High balls claimed/collected", "type": "int", "min": 0},
+    "punches": {"description": "Punched clearances", "type": "int", "min": 0},
+    "sweeper_actions": {"description": "Keeper sweeper actions outside box", "type": "int", "min": 0},
+
     # Playing time
     "minutes": {"description": "Minutes played", "type": "float", "min": 0.0},
 }
@@ -520,6 +545,29 @@ METRIC_SYNONYMS = {
     "sent off": "red_cards",
     "dismissals": "red_cards",
     "dismissed": "red_cards",
+    # Goalkeeper
+    "saves": "saves",
+    "save": "saves",
+    "stops": "saves",
+    "shot saved": "saves",
+    "goals conceded": "goals_conceded",
+    "goals let in": "goals_conceded",
+    "conceded": "goals_conceded",
+    "penalty save": "penalties_saved",
+    "penalty saves": "penalties_saved",
+    "penalty saved": "penalties_saved",
+    "saved penalty": "penalties_saved",
+    "saved penalties": "penalties_saved",
+    "penalties": "penalties_saved",
+    "claims": "claims",
+    "claim": "claims",
+    "collected": "claims",
+    "punches": "punches",
+    "punch": "punches",
+    "sweeper": "sweeper_actions",
+    "sweeper actions": "sweeper_actions",
+    "sweeper action": "sweeper_actions",
+    "keeper sweeper": "sweeper_actions",
 }
 
 AGGREGATION_SYNONYMS = {

@@ -626,7 +626,10 @@ def resolve(query: StructuredQuery, data: dict | None = None) -> StructuredResul
         if query.intent == "superlative" and result_data:
             top = result_data[0]
             name = top.get("player_name") or top.get("team_name") or str(top.get("match_id"))
-            explanation = f"The top {metric} is {_format_value(top.get(metric, 0), metric)} by {name}."
+            if agg == "min":
+                explanation = f"The lowest {metric} is {_format_value(top.get(metric, 0), metric)} by {name}."
+            else:
+                explanation = f"The top {metric} is {_format_value(top.get(metric, 0), metric)} by {name}."
         elif agg_value is not None:
             explanation = f"The {agg} {metric} across all matching records is {_format_value(agg_value, metric)}."
         else:

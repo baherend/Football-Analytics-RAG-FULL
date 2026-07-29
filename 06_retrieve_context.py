@@ -950,6 +950,13 @@ STRUCTURED_PATTERNS = [
     r"who\s+(?:plays?|played)\s+(?:the\s+)?(?:most\s+)?aggressively",
     r"(?:most|who\s+(?:was|is)\s+(?:the\s+)?)?\s*toug(?:h|est)\s*(?:player)?",
     r"who\s+fouls?\s+(?:a\s+lot|much|often|frequently)",
+    # Goalkeeper patterns
+    r"(?:most|highest|fewest|least)\s+(saves?|goals?\s*conceded|claims?|punches?|penalt(?:y|ies)\s*(?:saved?|saves?))",
+    r"who\s+(?:has|had|made|got)\s+(?:the\s+)?(?:most|highest|fewest|least)\s+(saves?|goals?\s*conceded|claims?|punches?|penalt(?:y|ies)\s*saved?)",
+    r"how\s+many\s+(saves?|goals?\s*conceded|claims?|punches?|penalt(?:y|ies)\s*(?:saved?|saves?))\s+(?:did|does|has|have)\s+(.+?)(?:\s+(?:make|have|get|concede|save)|\s*$|\s*\?)",
+    r"(?:which|who)\s+(?:goal\s*)?keeper\s+(?:has|had|made|got)\s+(?:the\s+)?(?:most|fewest|least)\s+(saves?|goals?\s*conceded|claims?|punches?)",
+    r"(?:clean\s*sheets?|shut\s*outs?)",
+    r"who\s+(?:has|had)\s+(?:the\s+)?(?:most|fewest)\s+clean\s*sheets?",
     r"what\s+(?:is|was|are|were)\s+(.+?)(?:'s|'s)?\s+([\w\s]+?)(?:\s*$|\s*\?)",
     r"^(.+?)\s+(goals|assists|xg|shots|passes|minutes|tackles|interceptions)$",
 ]
@@ -971,6 +978,8 @@ STRUCTURED_KEYWORDS = {
     "fouls", "foul", "yellow card", "yellow cards", "red card", "red cards",
     "bookings", "booked", "cards", "dirtiest", "aggressive", "aggression",
     "toughest", "tough",
+    "saves", "save", "conceded", "claims", "punches", "penalty saves",
+    "clean sheet", "clean sheets", "keeper", "goalkeeper",
 }
 
 SEMANTIC_KEYWORDS = {
@@ -1189,8 +1198,83 @@ def parse_structured_query(query: str) -> StructuredQuery | None:
                                    aggregation="sum", entity_name=player_raw.strip().title(),
                                    filters=filters)
 
+    # Pattern: "most saves" / "fewest goals conceded" / "most punches"
+    match = re.search(
+        r"(?:most|highest|fewest|least)\s+(saves?|goals?\s*conceded|claims?|punches?|penalt(?:y|ies)\s*(?:saved?|saves?))",
+        query_lower
+    )
+    if match:
+        metric_raw = match.group(1).replace("  ", " ")
+        metric = resolve_metric(metric_raw)
+        if metric:
+            agg = "min" if "fewest" in query_lower or "least" in query_lower else "max"
+            return StructuredQuery(intent="superlative", entity="player", metric=metric,
+                                   aggregation=agg, limit=1, filters=filters)
+
+    # Pattern: "who has the most saves" / "who made the most saves"
+    match = re.search(
+        r"who\s+(?:has|had|made|got)\s+(?:the\s+)?(?:most|highest|fewest|least)\s+(saves?|goals?\s*conceded|claims?|punches?|penalt(?:y|ies)\s*saved?)",
+        query_lower
+    )
+    if match:
+        metric_raw = match.group(1)
+        metric = resolve_metric(metric_raw)
+        if metric:
+            agg = "min" if "fewest" in query_lower or "least" in query_lower else "max"
+            return StructuredQuery(intent="superlative", entity="player", metric=metric,
+                                   aggregation=agg, limit=1, filters=filters)
+
+    # Pattern: "which keeper has the most saves"
+    match = re.search(
+        r"(?:which|who)\s+(?:goal\s*)?keeper\s+(?:has|had|made|got)\s+(?:the\s+)?(?:most|fewest|least)\s+(saves?|goals?\s*conceded|claims?|punches?)",
+        query_lower
+    )
+    if match:
+        metric_raw = match.group(1)
+        metric = resolve_metric(metric_raw)
+        if metric:
+            agg = "min" if "fewest" in query_lower or "least" in query_lower else "max"
+            return StructuredQuery(intent="superlative", entity="player", metric=metric,
+                                   aggregation=agg, limit=1, filters=filters)
+
+    # Pattern: "who conceded the fewest/most goals"
+    match = re.search(
+        r"who\s+conceded\s+(?:the\s+)?(most|fewest|least|highest)\s+(goals?)",
+        query_lower
+    )
+    if match:
+        agg_raw, metric_raw = match.groups()
+        agg = "min" if agg_raw in ("fewest", "least") else "max"
+        return StructuredQuery(intent="superlative", entity="player", metric="goals_conceded",
+                               aggregation=agg, limit=1, filters=filters)
+
+    # Pattern: "how many saves did <player> make"
+    match = re.search(
+        r"how\s+many\s+(saves?|goals?\s*conceded|claims?|punches?|penalt(?:y|ies)\s*(?:saved?|saves?))\s+(?:did|does|has|have)\s+(.+?)(?:\s+(?:make|have|get|concede|save)|\s*$|\s*\?)",
+        query_lower
+    )
+    if match:
+        metric_raw, player_raw = match.groups()
+        metric = resolve_metric(metric_raw)
+        if metric:
+            return StructuredQuery(intent="numeric", entity="player", metric=metric,
+                                   aggregation="sum", entity_name=player_raw.strip().title(),
+                                   filters=filters)
+
+    # Pattern: "clean sheet" / "most clean sheets"
+    if re.search(r"clean\s*sheet", query_lower):
+        # Clean sheet = 0 goals conceded in a match. We can't directly query
+        # "clean sheets" as a metric, but we can find keepers with fewest goals
+        # conceded. Route as goals_conceded min (fewest).
+        if re.search(r"most\s+clean\s*sheet", query_lower):
+            return StructuredQuery(intent="superlative", entity="player", metric="goals_conceded",
+                                   aggregation="min", limit=1, filters=filters)
+        # For "did X keep a clean sheet", we'd need per-match filtering —
+        # fall through to semantic for now
+        return StructuredQuery(intent="superlative", entity="player", metric="goals_conceded",
+                               aggregation="min", limit=1, filters=filters)
+
     # Pattern: "<player> <metric>"
-    match = re.search(r"^(.+?)\s+(goals|assists|xg|shots|passes|minutes|tackles|interceptions)$", query_lower)
     if match:
         player_raw, metric_raw = match.groups()
         metric = resolve_metric(metric_raw)
