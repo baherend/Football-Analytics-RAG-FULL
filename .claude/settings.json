@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python 04_vector_representation.py)"
-    ]
-  }
-}
