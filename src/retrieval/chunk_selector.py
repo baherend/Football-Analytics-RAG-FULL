@@ -1,0 +1,134 @@
+"""Select candidate chunks that contain answer-bearing query evidence."""
+
+from __future__ import annotations
+
+import re
+from typing import Any
+
+
+_TOKEN_PATTERN = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+
+_STOP_WORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "did", "do",
+    "does", "for", "from", "had", "has", "have", "how", "in", "is",
+    "it", "most", "of", "on", "or", "the", "their", "they", "to",
+    "usually", "was", "were", "what", "when", "which", "who", "with",
+}
+
+_ENTITY_METADATA_FIELDS = {
+    "team_name",
+    "player_name",
+    "home_team",
+    "away_team",
+}
+
+
+def _normalize_token(token: str) -> str:
+    """Apply small, deterministic English morphology normalization."""
+    token = token.casefold()
+
+    if len(token) > 5 and token.endswith("ies"):
+        return token[:-3] + "y"
+    if len(token) > 5 and token.endswith("ing"):
+        return token[:-3]
+    if len(token) > 4 and token.endswith("ed"):
+        return token[:-2]
+    if len(token) > 4 and token.endswith("es"):
+        return token[:-2]
+    if len(token) > 3 and token.endswith("s"):
+        return token[:-1]
+
+    return token
+
+
+def _content_terms(text: str) -> set[str]:
+    """Extract normalized non-stopword terms from text."""
+    return {
+        normalized
+        for token in _TOKEN_PATTERN.findall(text or "")
+        if (normalized := _normalize_token(token)) not in _STOP_WORDS
+    }
+
+
+def _chunk_entity_terms(chunk: dict[str, Any]) -> set[str]:
+    """Extract entity terms from one candidate's metadata."""
+    metadata = chunk.get("metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    terms: set[str] = set()
+    for field in _ENTITY_METADATA_FIELDS:
+        value = metadata.get(field) or chunk.get(field)
+        if value:
+            terms.update(_content_terms(str(value)))
+
+    return terms
+
+
+def select_relevant_chunks(
+    query: str,
+    chunks: list[dict[str, Any]],
+    max_chunks: int,
+) -> list[dict[str, Any]]:
+    """Select chunks using entity grounding and marginal facet coverage."""
+    if max_chunks <= 0 or not chunks:
+        return []
+
+    raw_query_terms = _content_terms(query)
+    if not raw_query_terms:
+        return []
+
+    entity_terms_by_chunk = [
+        _chunk_entity_terms(chunk)
+        for chunk in chunks
+    ]
+    all_entity_terms = set().union(*entity_terms_by_chunk)
+    mentioned_entity_terms = raw_query_terms & all_entity_terms
+
+    query_evidence_terms = raw_query_terms - all_entity_terms
+    if not query_evidence_terms:
+        return chunks[:max_chunks]
+
+    candidates: list[tuple[int, dict[str, Any], set[str]]] = []
+
+    for position, chunk in enumerate(chunks):
+        chunk_entity_terms = entity_terms_by_chunk[position]
+
+        if (
+            mentioned_entity_terms
+            and not (chunk_entity_terms & mentioned_entity_terms)
+        ):
+            continue
+
+        chunk_terms = _content_terms(str(chunk.get("text", "")))
+        covered_terms = query_evidence_terms & chunk_terms
+
+        if covered_terms:
+            candidates.append((position, chunk, covered_terms))
+
+    if not candidates:
+        return chunks[:max_chunks]
+
+    selected: list[dict[str, Any]] = []
+    covered: set[str] = set()
+
+    while candidates and len(selected) < max_chunks:
+        best_index = max(
+            range(len(candidates)),
+            key=lambda index: (
+                len(candidates[index][2] - covered),
+                len(candidates[index][2]),
+                -candidates[index][0],
+            ),
+        )
+
+        _, chunk, chunk_coverage = candidates.pop(best_index)
+        new_coverage = chunk_coverage - covered
+
+        if not new_coverage:
+            break
+
+        selected.append(chunk)
+        covered.update(new_coverage)
+
+    return selected

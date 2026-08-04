@@ -24,6 +24,8 @@ import pickle
 import re
 from pathlib import Path
 
+from src.retrieval.chunk_selector import select_relevant_chunks
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -721,6 +723,70 @@ def _ensure_match_summary(
     return results
 
 
+def _expand_query_entity_siblings(query: str, results: list[dict]) -> list[dict]:
+    """Add sibling chunks for candidate documents whose entity appears in query."""
+    query_lower = query.casefold()
+    entity_fields = ("team_name", "player_name", "home_team", "away_team")
+    target_document_ids: set[str] = set()
+
+    for result in results:
+        metadata = result.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        entity_values = [
+            metadata.get(field) or result.get(field)
+            for field in entity_fields
+        ]
+        entity_matches = any(
+            str(value).strip().casefold() in query_lower
+            for value in entity_values
+            if value
+        )
+
+        if entity_matches:
+            document_id = result.get("document_id") or metadata.get("document_id")
+            if document_id:
+                target_document_ids.add(str(document_id))
+
+    if not target_document_ids:
+        return results
+
+    expanded = list(results)
+    seen_chunk_ids = {item.get("chunk_id") for item in expanded}
+
+    for raw_chunk in _load_chunks():
+        raw_metadata = raw_chunk.get("metadata", {})
+        if not isinstance(raw_metadata, dict):
+            raw_metadata = {}
+
+        document_id = (
+            raw_chunk.get("document_id")
+            or raw_metadata.get("document_id")
+        )
+        chunk_id = raw_chunk.get("chunk_id")
+
+        if document_id not in target_document_ids or chunk_id in seen_chunk_ids:
+            continue
+
+        metadata = dict(raw_metadata)
+        metadata.setdefault("document_id", document_id)
+        for field in ("level", "match_id", "player_name", "team_name", "home_team", "away_team"):
+            if metadata.get(field) is None and raw_chunk.get(field) is not None:
+                metadata[field] = raw_chunk.get(field)
+
+        expanded.append({
+            "chunk_id": chunk_id,
+            "text": raw_chunk.get("text", ""),
+            "metadata": metadata,
+            "score": 0.0,
+            "rrf_score": 0.0,
+            "source": "sibling_expansion",
+        })
+        seen_chunk_ids.add(chunk_id)
+
+    return expanded
+
 # ---------------------------------------------------------------------------
 # Hybrid Search — Orchestrator (LAB 8 — Step 6)
 # ---------------------------------------------------------------------------
@@ -774,8 +840,14 @@ def hybrid_search(
     # Step 7: Ensure Level-1 match summary for match-level queries
     reranked = _ensure_match_summary(query, reranked, k)
 
-    # Step 8: Return Top-K
-    return reranked[:k]
+    # Step 8: Expand siblings for query-matched entity documents
+    expanded = _expand_query_entity_siblings(query, reranked)
+
+    # Step 9: Select chunks with answer-bearing query-facet coverage
+    selected = select_relevant_chunks(query, expanded, max_chunks=k)
+
+    # Step 10: Return selected Top-K
+    return selected
 
 
 # ---------------------------------------------------------------------------
