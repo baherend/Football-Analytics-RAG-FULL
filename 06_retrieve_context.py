@@ -396,40 +396,55 @@ def _ensure_comparison_entities(
 # Team Style Query Detection
 # ---------------------------------------------------------------------------
 
-_STYLE_KEYWORDS = {"style", "formation", "play pattern", "tactics", "approach",
-                   "playing style", "how they play", "how they played"}
+_STYLE_KEYWORDS = {
+    "style",
+    "formation",
+    "formations",
+    "play pattern",
+    "play patterns",
+    "passing pattern",
+    "passing patterns",
+    "tactics",
+    "approach",
+    "playing style",
+    "how they play",
+    "how they played",
+}
 
 
 def _detect_team_style_query(query: str) -> str | None:
-    """
-    Detect if a query is asking about a team's playing style.
-    Returns team name if detected, None otherwise.
-    """
+    """Return the team name for a team-style query, otherwise None."""
     query_lower = query.lower().strip()
 
-    # Check for style keywords
-    has_style = any(kw in query_lower for kw in _STYLE_KEYWORDS)
-    if not has_style:
+    if not any(keyword in query_lower for keyword in _STYLE_KEYWORDS):
         return None
 
-    # Extract team name using common patterns
-    import re
     patterns = [
-        r"(?:what\s+was|how\s+did|describe)\s+(.+?)(?:'s|s')\s+(?:playing\s+)?style",
-        r"(.+?)(?:'s|s')\s+(?:playing\s+)?style",
-        r"(?:what\s+was|how\s+did)\s+(.+?)\s+play",
-        r"(.+?)\s+(?:formation|tactics|approach)",
+        (
+            r"^(?:what\s+(?:was|were)\s+|describe\s+|how\s+did\s+)?"
+            r"(.+?)(?:['?]s|s')\s+"
+            r"(?:passing\s+patterns?|(?:most\s+common\s+)?formations?|"
+            r"tactics|approach|(?:playing\s+)?style)\b"
+        ),
+        r"^(.+?)(?:['?]s|s')\s+(?:playing\s+)?style\b",
+        r"^(?:what\s+(?:was|were)|how\s+did)\s+(.+?)\s+play\b",
+        r"^(?:describe\s+)?(.+?)\s+(?:formations?|tactics|approach)\b",
     ]
 
     for pattern in patterns:
         match = re.search(pattern, query_lower)
-        if match:
-            team_raw = match.group(1).strip()
-            # Clean up common words
-            for word in ["the", "a", "an", "in", "during", "at"]:
-                team_raw = team_raw.replace(f" {word} ", " ").strip()
-            if len(team_raw) > 2:
-                return team_raw.title()
+        if not match:
+            continue
+
+        team_name = match.group(1).strip(" ,.?")
+        team_name = re.sub(
+            r"^(?:what\s+(?:was|were)|how\s+did|describe)\s+",
+            "",
+            team_name,
+        ).strip()
+
+        if len(team_name) > 2:
+            return team_name.title()
 
     return None
 
@@ -519,29 +534,51 @@ _STAGE_KEYWORDS = {
 
 
 def _detect_match_query(query: str) -> tuple[str | None, str | None]:
-    """
-    Detect if a query is asking about a specific match.
-    Returns (team_name, stage) if detected, (None, None) otherwise.
-    """
+    """Return the detected team and stage for a specific-match query."""
     query_lower = query.lower().strip()
 
-    # Extract stage
     stage = None
     for keyword, stage_name in _STAGE_KEYWORDS.items():
         if keyword in query_lower:
             stage = stage_name
             break
 
-    # Extract team name
-    for pattern in _MATCH_QUERY_PATTERNS:
+    head_to_head_patterns = [
+        (
+            r"\b(?:in|between)\s+(?:the\s+)?"
+            r"([a-z?-?][a-z?-? .'-]+?)\s+"
+            r"(?:vs\.?|versus|and)\s+"
+            r"([a-z?-?][a-z?-? .'-]+?)"
+            r"(?=\s+(?:final|semi-finals?|semi-final|quarter-finals?|"
+            r"quarter-final|round of 16|group stage|3rd place final)\b|\?|$)"
+        ),
+        (
+            r"^([a-z?-?][a-z?-? .'-]+?)\s+"
+            r"(?:vs\.?|versus)\s+"
+            r"([a-z?-?][a-z?-? .'-]+?)"
+            r"(?=\s+(?:final|semi-finals?|semi-final|quarter-finals?|"
+            r"quarter-final|round of 16|group stage|3rd place final)\b|\?|$)"
+        ),
+    ]
+
+    for pattern in head_to_head_patterns:
         match = re.search(pattern, query_lower)
         if match:
-            team_raw = match.group(1).strip()
-            # Clean up common words
-            for word in ["the", "a", "an", "in", "during", "at", "did"]:
-                team_raw = team_raw.replace(f" {word} ", " ").strip()
-            if len(team_raw) > 2:
-                return team_raw.title(), stage
+            team_name = match.group(1).strip(" ,.?")
+            if len(team_name) > 2:
+                return team_name.title(), stage
+
+    for pattern in _MATCH_QUERY_PATTERNS:
+        match = re.search(pattern, query_lower)
+        if not match:
+            continue
+
+        team_name = match.group(1).strip()
+        for word in ["the", "a", "an", "in", "during", "at", "did"]:
+            team_name = team_name.replace(f" {word} ", " ").strip()
+
+        if len(team_name) > 2:
+            return team_name.title(), stage
 
     return None, stage
 
@@ -552,72 +589,134 @@ def _ensure_match_summary(
     k: int,
 ) -> list[dict]:
     """
-    When a query asks about a specific match, ensure the Level-1 Match Summary
-    document is included in the top-k results.
+    Include an L1 match summary only for a genuine match query, without
+    displacing stronger retrieved results.
     """
     team_name, stage = _detect_match_query(query)
     if not team_name and not stage:
         return results
 
-    top_k = results[:k]
-    team_lower = (team_name or "").lower()
-    stage_lower = (stage or "").lower()
-
-    # Check if L1 doc matching the team/stage is already in top-k
-    # Use exact stage matching to avoid "Semi-finals" matching "final"
-    def _matches_stage(text: str, stage: str) -> bool:
-        text_lower = text.lower()[:300]
-        stage_lower = stage.lower()
-        # Exact match: "the Final between" or "Final," etc.
-        if stage_lower == "final":
-            return "final between" in text_lower or "final," in text_lower or "the final" in text_lower
-        return stage_lower in text_lower
-
-    has_l1_in_topk = any(
-        r.get("metadata", {}).get("level") == "1" and
-        (team_lower in (r.get("text", "") or "").lower()[:300] if team_lower else True) and
-        (_matches_stage(r.get("text", ""), stage) if stage else True)
-        for r in top_k
+    query_lower = query.lower().strip()
+    explicit_match_intent = any(
+        marker in query_lower
+        for marker in (
+            " match",
+            " game",
+            "between ",
+            " vs ",
+            " versus ",
+            "what happened",
+            "key events",
+        )
     )
 
-    if has_l1_in_topk:
+    if team_name is None and not explicit_match_intent:
         return results
 
-    # Find matching L1 doc in chunks
     chunks = _load_chunks()
+    team_lower = (team_name or "").lower()
+
+    if team_name:
+        known_teams = {
+            (
+                chunk.get("team_name")
+                or chunk.get("metadata", {}).get("team_name")
+                or ""
+            ).strip().lower()
+            for chunk in chunks
+            if chunk.get("level") == "team"
+        }
+        known_teams.discard("")
+
+        is_known_team = any(
+            team_lower == known
+            or team_lower in known
+            or known in team_lower
+            for known in known_teams
+        )
+        if not is_known_team:
+            return results
+
+    def _matches_stage(text: str, requested_stage: str) -> bool:
+        text_lower = (text or "").lower()[:300]
+        requested = requested_stage.lower()
+
+        if requested == "final":
+            exclusions = (
+                "semi-final",
+                "semi final",
+                "quarter-final",
+                "quarter final",
+                "3rd place final",
+                "third place final",
+            )
+            if any(value in text_lower for value in exclusions):
+                return False
+            return re.search(r"\bfinal\b", text_lower) is not None
+
+        return requested in text_lower
+
+    top_k = results[:k]
+    already_present = any(
+        item.get("metadata", {}).get("level") == "1"
+        and (
+            team_lower in (item.get("text", "") or "").lower()[:300]
+            if team_lower
+            else True
+        )
+        and (
+            _matches_stage(item.get("text", ""), stage)
+            if stage
+            else True
+        )
+        for item in top_k
+    )
+    if already_present:
+        return results
+
     for chunk in chunks:
         if chunk.get("level") != "1":
             continue
 
         text = chunk.get("text", "")
-        text_lower = text.lower()[:300]
-        team_match = team_lower in text_lower if team_lower else True
+        team_match = team_lower in text.lower()[:300] if team_lower else True
         stage_match = _matches_stage(text, stage) if stage else True
 
-        if team_match and stage_match:
-            addition = {
-                "chunk_id": chunk["chunk_id"],
-                "text": chunk["text"],
-                "metadata": {
-                    "document_id": chunk.get("document_id") or chunk.get("metadata", {}).get("document_id"),
-                    "level": "1",
-                    "match_id": chunk.get("match_id") or chunk.get("metadata", {}).get("match_id"),
-                    "home_team": chunk.get("metadata", {}).get("home_team"),
-                    "away_team": chunk.get("metadata", {}).get("away_team"),
-                },
-                "score": 0.01,
-                "rrf_score": 0.01,
-                "source": "match_summary_boost",
-            }
-            # Deduplicate: prepend and remove any existing copy
-            seen_ids = set()
-            deduped = [addition]
-            seen_ids.add(addition["chunk_id"])
-            for r in results:
-                if r["chunk_id"] not in seen_ids:
-                    deduped.append(r)
-                    seen_ids.add(r["chunk_id"])
-            return deduped
+        if not (team_match and stage_match):
+            continue
+
+        if k <= 1:
+            return results
+
+        addition = {
+            "chunk_id": chunk["chunk_id"],
+            "text": text,
+            "metadata": {
+                "document_id": (
+                    chunk.get("document_id")
+                    or chunk.get("metadata", {}).get("document_id")
+                ),
+                "level": "1",
+                "match_id": (
+                    chunk.get("match_id")
+                    or chunk.get("metadata", {}).get("match_id")
+                ),
+                "home_team": chunk.get("metadata", {}).get("home_team"),
+                "away_team": chunk.get("metadata", {}).get("away_team"),
+            },
+            "score": 0.01,
+            "rrf_score": 0.01,
+            "source": "match_summary_boost",
+        }
+
+        existing = [
+            item
+            for item in results
+            if item.get("chunk_id") != addition["chunk_id"]
+        ]
+
+        insert_at = min(k - 1, len(existing))
+        return existing[:insert_at] + [addition] + existing[insert_at:]
 
     return results
 
@@ -878,12 +977,12 @@ def _extract_opponent_filter(query: str) -> Filter | None:
 
 # Comparison detection patterns (router version)
 COMPARISON_PATTERNS = [
-    r"compare\s+(.+?)\s+and\s+(.+?)(?:\s|$|\?)",
-    r"who\s+(?:performed|played|did)\s+better.*?(\w+)\s+or\s+(\w+)",
+    r"compare\s+(.+?)\s+and\s+(.+?)(?:\s+in\b|\s*$|\s*\?)",
+    r"who\s+(?:performed|played|did)\s+better[,.]?\s*(.+?)\s+or\s+(.+?)(?:\s*$|\s*\?)",
     r"(\w+)\s+vs\.?\s+(\w+)",
     r"(\w+)\s+versus\s+(\w+)",
-    r"who\s+(?:is|was)\s+better.*?(\w+)\s+or\s+(\w+)",
-    r"difference\s+between\s+(.+?)\s+and\s+(.+?)(?:\s|$|\?)",
+    r"who\s+(?:is|was)\s+better[,.]?\s*(.+?)\s+or\s+(.+?)(?:\s*$|\s*\?)",
+    r"difference\s+between\s+(.+?)\s+and\s+(.+?)(?:\s*$|\s*\?)",
 ]
 
 
@@ -901,6 +1000,10 @@ def _detect_comparison(query: str) -> list[str]:
                                    "'s stats", "'s goals"]:
                         if entity.endswith(suffix):
                             entity = entity[:-len(suffix)]
+                    # Strip trailing metric clauses: "in goals, assists, ..."
+                    in_match = re.match(r"^(.+?)\s+in\s+[\w\s,]+$", entity)
+                    if in_match:
+                        entity = in_match.group(1)
                     if entity and len(entity) > 1:
                         entities.append(entity.title())
             if len(entities) >= 2:
@@ -993,12 +1096,18 @@ def classify_query(query: str) -> tuple[str, float]:
     """Classify a query as "structured", "semantic", or "hybrid"."""
     query_lower = query.lower().strip()
 
+    if _detect_comparison(query):
+        return "hybrid", 0.9
+
+    # Team playing-style questions are qualitative. Route them through the
+    # semantic path so hybrid retrieval and the team-style document safeguard
+    # are executed instead of the broad numeric parser.
+    if _detect_team_style_query(query):
+        return "semantic", 0.9
+
     for pattern in STRUCTURED_PATTERNS:
         if re.search(pattern, query_lower):
             return "structured", 0.9
-
-    if _detect_comparison(query):
-        return "hybrid", 0.9
 
     for pattern in SEMANTIC_PATTERNS:
         if re.search(pattern, query_lower):

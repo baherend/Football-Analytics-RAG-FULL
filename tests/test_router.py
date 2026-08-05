@@ -137,6 +137,203 @@ def test_unknown_metric():
 
 
 # ---------------------------------------------------------------------------
+# Tests: Comparison Detection and Routing
+# ---------------------------------------------------------------------------
+
+
+def test_comparison_entity_extraction():
+    """_detect_comparison() must return full multi-word entity names."""
+    cases = [
+        ("Compare Messi and Mbappé's performance", ["Messi", "Mbappé"]),
+        ("Messi vs Mbappé", ["Messi", "Mbappé"]),
+        ("Who was better, Lionel Messi or Kylian Mbappé?", ["Lionel Messi", "Kylian Mbappé"]),
+        ("Compare Argentina and France", ["Argentina", "France"]),
+        ("What is the difference between Lionel Messi and Julián Álvarez?", ["Lionel Messi", "Julián Álvarez"]),
+        ("Compare Messi and Mbappé in goals, assists, xG, shots, and minutes", ["Messi", "Mbappé"]),
+    ]
+    for question, expected in cases:
+        result = router._detect_comparison(question)
+        assert result == expected, f"_detect_comparison({question!r}) = {result}, expected {expected}"
+
+
+def test_comparison_classification_hybrid():
+    """All six comparison questions must classify as hybrid."""
+    questions = [
+        "Compare Messi and Mbappé's performance",
+        "Messi vs Mbappé",
+        "Who was better, Lionel Messi or Kylian Mbappé?",
+        "Compare Argentina and France",
+        "What is the difference between Lionel Messi and Julián Álvarez?",
+        "Compare Messi and Mbappé in goals, assists, xG, shots, and minutes",
+    ]
+    for question in questions:
+        classification, confidence = router.classify_query(question)
+        assert classification == "hybrid", f"classify_query({question!r}) = ({classification}, {confidence}), expected hybrid"
+
+
+def test_comparison_routing_hybrid():
+    """All six comparison questions must route to hybrid."""
+    questions = [
+        "Compare Messi and Mbappé's performance",
+        "Messi vs Mbappé",
+        "Who was better, Lionel Messi or Kylian Mbappé?",
+        "Compare Argentina and France",
+        "What is the difference between Lionel Messi and Julián Álvarez?",
+        "Compare Messi and Mbappé in goals, assists, xG, shots, and minutes",
+    ]
+    for question in questions:
+        route = router.route_query(question)
+        assert route.path == "hybrid", f"route_query({question!r}).path = {route.path}, expected hybrid"
+
+
+
+# ---------------------------------------------------------------------------
+# Tests: Retrieval post-processing regressions
+# ---------------------------------------------------------------------------
+
+
+def test_team_style_detection_supports_passing_patterns():
+    question = "What were France's passing patterns and most common formations?"
+    assert router._detect_team_style_query(question) == "France"
+
+
+def test_team_style_query_routes_to_semantic():
+    question = "What were France's passing patterns and most common formations?"
+
+    classification, confidence = router.classify_query(question)
+    route = router.route_query(question)
+
+    assert classification == "semantic"
+    assert confidence == 0.9
+    assert route.path == "semantic"
+    assert route.semantic_query == question
+    assert route.structured_query is None
+
+
+def test_match_query_extracts_head_to_head_final():
+    question = "What were the key events in the Argentina vs France Final?"
+    assert router._detect_match_query(question) == ("Argentina", "Final")
+
+
+def test_match_summary_uses_correct_final_and_preserves_first_result(monkeypatch):
+    chunks = [
+        {
+            "chunk_id": "TEAM-779-chunk-0",
+            "level": "team",
+            "team_name": "Argentina",
+            "metadata": {"team_name": "Argentina"},
+        },
+        {
+            "chunk_id": "L1-match-3869684-chunk-0",
+            "document_id": "L1-match-3869684",
+            "level": "1",
+            "text": "The 3rd Place Final between Croatia and Morocco.",
+            "metadata": {"match_id": 3869684},
+        },
+        {
+            "chunk_id": "L1-match-3869685-chunk-0",
+            "document_id": "L1-match-3869685",
+            "level": "1",
+            "text": "The Final between Argentina and France.",
+            "metadata": {"match_id": 3869685},
+        },
+    ]
+    results = [
+        {
+            "chunk_id": "L2-match-3869685-chunk-0",
+            "text": "Final key events.",
+            "metadata": {"document_id": "L2-match-3869685", "level": "2"},
+        },
+        {
+            "chunk_id": "other-1",
+            "text": "Other result.",
+            "metadata": {"document_id": "other-1", "level": "2"},
+        },
+        {
+            "chunk_id": "other-2",
+            "text": "Other result.",
+            "metadata": {"document_id": "other-2", "level": "2"},
+        },
+    ]
+
+    monkeypatch.setattr(router, "_load_chunks", lambda: chunks)
+
+    boosted = router._ensure_match_summary(
+        "What were the key events in the Argentina vs France Final?",
+        results,
+        k=3,
+    )
+
+    assert boosted[0]["chunk_id"] == "L2-match-3869685-chunk-0"
+    assert boosted[2]["chunk_id"] == "L1-match-3869685-chunk-0"
+    assert all(
+        item["chunk_id"] != "L1-match-3869684-chunk-0"
+        for item in boosted
+    )
+
+
+def test_match_summary_skips_player_performance(monkeypatch):
+    chunks = [
+        {
+            "chunk_id": "TEAM-779-chunk-0",
+            "level": "team",
+            "team_name": "Argentina",
+            "metadata": {"team_name": "Argentina"},
+        },
+        {
+            "chunk_id": "L1-match-3869519-chunk-0",
+            "level": "1",
+            "text": "The Semi-finals between Argentina and Croatia.",
+            "metadata": {"match_id": 3869519},
+        },
+    ]
+    results = [
+        {
+            "chunk_id": "L3-match-3869519-player-5503-chunk-0",
+            "text": "Messi performance.",
+            "metadata": {
+                "document_id": "L3-match-3869519-player-5503",
+                "level": "3",
+            },
+        }
+    ]
+
+    monkeypatch.setattr(router, "_load_chunks", lambda: chunks)
+
+    assert router._ensure_match_summary(
+        "How did Messi perform against Croatia in the semi-final?",
+        results,
+        k=3,
+    ) == results
+
+
+def test_match_summary_skips_tournament_journey(monkeypatch):
+    chunks = [
+        {
+            "chunk_id": "TEAM-788-chunk-0",
+            "level": "team",
+            "team_name": "Morocco",
+            "metadata": {"team_name": "Morocco"},
+        }
+    ]
+    results = [
+        {
+            "chunk_id": "TEAM-788-chunk-0",
+            "text": "Morocco tournament analysis.",
+            "metadata": {"document_id": "TEAM-788", "level": "team"},
+        }
+    ]
+
+    monkeypatch.setattr(router, "_load_chunks", lambda: chunks)
+
+    assert router._ensure_match_summary(
+        "How did Morocco reach the semi-finals, and what style did they use?",
+        results,
+        k=5,
+    ) == results
+
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -156,6 +353,9 @@ def run_all_tests():
         test_semantic_execution,
         test_ambiguous_query,
         test_unknown_metric,
+        test_comparison_entity_extraction,
+        test_comparison_classification_hybrid,
+        test_comparison_routing_hybrid,
     ]
 
     passed, failed = 0, 0
