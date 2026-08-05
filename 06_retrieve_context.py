@@ -24,6 +24,10 @@ import pickle
 import re
 from pathlib import Path
 
+from src.retrieval.answerability import (
+    AnswerabilityAssessment,
+    assess_answerability,
+)
 from src.retrieval.chunk_selector import select_relevant_chunks
 
 
@@ -1100,6 +1104,7 @@ class RoutedResult:
     route: Route
     structured_result: StructuredResult | None = None
     semantic_chunks: list[dict] | None = None
+    answerability: AnswerabilityAssessment | None = None
     context: str = ""
     explanation: str = ""
 
@@ -1590,15 +1595,32 @@ def execute_route(route: Route, semantic_k: int = 3, original_query: str = "") -
         except Exception as e:
             print(f"Semantic search failed: {e}")
 
+    answerability = None
+    if semantic_chunks is not None:
+        answerability_query = (
+            original_query
+            or route.semantic_query
+            or ""
+        )
+        answerability = assess_answerability(
+            query=answerability_query,
+            chunks=semantic_chunks,
+        )
+
     explanation = f"Routed to {route.path} path (confidence: {route.confidence:.2f}). "
     if structured_result:
         explanation += f"Structured: {structured_result.explanation} "
     if semantic_chunks:
         explanation += f"Semantic: {len(semantic_chunks)} chunks retrieved."
 
-    return RoutedResult(route=route, structured_result=structured_result,
-                        semantic_chunks=semantic_chunks, context=context,
-                        explanation=explanation)
+    return RoutedResult(
+        route=route,
+        structured_result=structured_result,
+        semantic_chunks=semantic_chunks,
+        answerability=answerability,
+        context=context,
+        explanation=explanation,
+    )
 
 
 def route_and_execute(query: str, semantic_k: int = 3) -> RoutedResult:
