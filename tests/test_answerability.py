@@ -132,3 +132,16 @@ def test_semantic_route_exposes_answerability_assessment(monkeypatch):
 
     assert result.answerability.status == "unanswerable"
 
+
+def test_pass_and_passes_normalize_consistently():
+    assessment = assess_answerability(
+        query="What pass patterns did Example FC use?",
+        chunks=[
+            _chunk(
+                "DOC-1-part-1",
+                "Their passes followed regular play patterns.",
+            ),
+        ],
+    )
+
+    assert assessment.status == "answerable"

@@ -46,6 +46,8 @@ def _normalize_token(token: str) -> str:
         return token[:-2]
     if len(token) > 4 and token.endswith("es"):
         return token[:-2]
+    if token.endswith("ss"):
+        return token
     if len(token) > 3 and token.endswith("s"):
         return token[:-1]
 
