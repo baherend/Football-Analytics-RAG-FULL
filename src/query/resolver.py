@@ -37,22 +37,26 @@ from src.stage_taxonomy import StageTaxonomy
 
 DATA_PATH = Path("output/match_facts.json")
 
-# Cache for loaded data (invalidated when file changes)
-_data_cache: dict | None = None
-_data_cache_mtime: float | None = None
+# Cache for loaded data, isolated by resolved artifact path.
+# Each entry stores ((mtime_ns, size), parsed_data).
+_data_cache_by_path: dict[Path, tuple[tuple[int, int], dict]] = {}
 
 
 def _load_data(path: Path = DATA_PATH) -> dict:
-    """Load match_facts.json with caching (invalidates on file change)."""
-    global _data_cache, _data_cache_mtime
+    """Load match_facts.json with path-aware, file-change-aware caching."""
+    resolved_path = path.resolve()
 
-    if path.exists():
-        mtime = path.stat().st_mtime
-        if _data_cache is not None and _data_cache_mtime == mtime:
-            return _data_cache
-        _data_cache = json.loads(path.read_text(encoding="utf-8"))
-        _data_cache_mtime = mtime
-        return _data_cache
+    if resolved_path.exists():
+        stat = resolved_path.stat()
+        signature = (stat.st_mtime_ns, stat.st_size)
+        cached = _data_cache_by_path.get(resolved_path)
+
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+
+        data = json.loads(resolved_path.read_text(encoding="utf-8"))
+        _data_cache_by_path[resolved_path] = (signature, data)
+        return data
 
     raise FileNotFoundError(
         f"match_facts.json not found at {path}. "
@@ -432,14 +436,22 @@ def resolve(
     # query validated under two different taxonomies never shares a cache hit.
     cache_key = json.dumps(query.to_dict(), sort_keys=True, default=str)
     if stage_taxonomy is not None:
-        cache_key += ":" + json.dumps(sorted(stage_taxonomy.stages))
+        taxonomy_key = {
+            "stages": sorted(stage_taxonomy.stages),
+            "knockout_stages": sorted(stage_taxonomy.knockout_stages),
+            "group_stages": sorted(stage_taxonomy.group_stages),
+            "stage_order": list(stage_taxonomy.stage_order) if stage_taxonomy.stage_order is not None else None,
+        }
+        cache_key += ":" + json.dumps(taxonomy_key, sort_keys=True)
 
-    # Check cache
-    cached = get_cached_structured_result(cache_key)
-    if cached is not None:
-        return cached
+    # Explicit in-memory data must never share the file-backed cache.
+    # Only the data=None path is tied to output/match_facts.json.
+    explicit_data = data is not None
 
-    if data is None:
+    if not explicit_data:
+        cached = get_cached_structured_result(cache_key)
+        if cached is not None:
+            return cached
         data = _load_data()
 
     # Validate query using MetricKind-aware validation
@@ -668,8 +680,9 @@ def resolve(
         explanation=explanation,
     )
 
-    # Cache the result (auto-invalidates when data changes)
-    set_cached_structured_result(cache_key, result)
+    # Cache only results resolved from the file-backed dataset.
+    if not explicit_data:
+        set_cached_structured_result(cache_key, result)
 
     return result
 
@@ -723,7 +736,7 @@ def resolve_from_text(query_text: str) -> StructuredResult:
                 aggregation="sum",
                 entity_name=player,
             )
-            return resolve(q, data)
+            return resolve(q)
 
     # Pattern: who <aggregation> <metric>
     who_pattern = re.compile(
@@ -743,7 +756,7 @@ def resolve_from_text(query_text: str) -> StructuredResult:
             aggregation=agg,
             limit=1,
         )
-        return resolve(q, data)
+        return resolve(q)
 
     return StructuredResult(
         status="empty",

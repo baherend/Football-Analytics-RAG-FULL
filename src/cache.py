@@ -40,29 +40,19 @@ def get_embedding_model(model_name: str = "all-MiniLM-L6-v2"):
 # ---------------------------------------------------------------------------
 
 _structured_cache: dict[str, Any] = {}
-_data_hash_cache: str | None = None
 
 
 def _compute_data_hash(data_path: Path = Path("output/match_facts.json")) -> str:
-    """
-    Compute hash of match_facts.json for cache invalidation.
-
-    Uses file modification time + size for fast hashing (not full content hash).
-    """
-    global _data_hash_cache
-
-    if _data_hash_cache is not None:
-        return _data_hash_cache
+    """Compute a current, path-aware signature for cache invalidation."""
+    resolved_path = data_path.resolve()
 
     if not data_path.exists():
-        _data_hash_cache = "no_data"
-        return _data_hash_cache
+        hash_input = f"{resolved_path}:missing"
+    else:
+        stat = data_path.stat()
+        hash_input = f"{resolved_path}:{stat.st_mtime_ns}:{stat.st_size}"
 
-    stat = data_path.stat()
-    # Fast hash: mtime + size
-    hash_input = f"{stat.st_mtime}:{stat.st_size}"
-    _data_hash_cache = hashlib.md5(hash_input.encode()).hexdigest()[:12]
-    return _data_hash_cache
+    return hashlib.md5(hash_input.encode()).hexdigest()[:12]
 
 
 def get_cached_structured_result(query_key: str) -> Any | None:
@@ -93,7 +83,5 @@ def set_cached_structured_result(query_key: str, result: Any) -> None:
 
 def clear_all_caches() -> None:
     """Clear all caches (useful for testing)."""
-    global _data_hash_cache
     _model_cache.clear()
     _structured_cache.clear()
-    _data_hash_cache = None
