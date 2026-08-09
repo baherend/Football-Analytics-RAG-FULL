@@ -4,24 +4,43 @@ generate_documents.py — Phase 2 CLI Entry Point
 Reads match_facts.json and produces documents.json via pure rendering.
 No statistics computation. No raw event parsing.
 
+The WC2022 default (competition_id=43, season_id=106) reads/writes the
+legacy flat output/ layout; any other competition/season reads/writes its
+own namespaced output/competitions/<id>/<id>/ directory (see
+src/artifacts.py's resolve_output_dir()).
+
+Pass --namespaced to explicitly read/write a WC2022 build at
+output/competitions/43/106/ instead of the legacy flat layout.
+
 Usage:
-    python generate_documents.py [--quiet]
+    python generate_documents.py [--competition-id ID] [--season-id ID] [--namespaced] [--quiet]
 """
 
 from __future__ import annotations
 
+import argparse
 import json
-import sys
 from collections import Counter
-from pathlib import Path
 
+from src.artifacts import resolve_output_dir
+from src.extraction.match_facts import COMPETITION_ID, SEASON_ID
 from src.rendering.render import render_all, persist
 
 
 def main() -> int:
-    verbose = "--quiet" not in sys.argv
-    facts_path = Path("output/match_facts.json")
-    output_path = Path("output/documents.json")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--competition-id", type=int, default=COMPETITION_ID)
+    parser.add_argument("--season-id", type=int, default=SEASON_ID)
+    parser.add_argument("--namespaced", action="store_true",
+                        help="Use output/competitions/<id>/<id>/ even for the WC2022 default")
+    parser.add_argument("--quiet", action="store_true")
+    args = parser.parse_args()
+
+    verbose = not args.quiet
+    output_dir = resolve_output_dir(args.competition_id, args.season_id,
+                                    legacy_default=not args.namespaced)
+    facts_path = output_dir / "match_facts.json"
+    output_path = output_dir / "documents.json"
 
     if not facts_path.exists():
         print(f"Error: {facts_path} not found. Run extract.py first.")

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from src.retrieval.chunk_selector import select_relevant_chunks
 
@@ -171,7 +171,7 @@ def test_hybrid_search_applies_chunk_selector_before_final_top_k(monkeypatch):
     monkeypatch.setattr(
         retrieval,
         "bm25_search",
-        lambda query, k=20: [
+        lambda query, k=20, artifact_paths=None: [
             {**FRANCE_TEAM_CHUNKS[0], "rank": 1, "source": "bm25"},
             {**FRANCE_TEAM_CHUNKS[1], "rank": 2, "source": "bm25"},
             {**FRANCE_TEAM_CHUNKS[2], "rank": 3, "source": "bm25"},
@@ -180,22 +180,22 @@ def test_hybrid_search_applies_chunk_selector_before_final_top_k(monkeypatch):
     monkeypatch.setattr(
         retrieval,
         "dense_search",
-        lambda query, k=20, level_filter=None: [],
+        lambda query, k=20, level_filter=None, artifact_paths=None: [],
     )
     monkeypatch.setattr(
         retrieval,
         "_ensure_comparison_entities",
-        lambda query, results, k: results,
+        lambda query, results, k, artifact_paths=None: results,
     )
     monkeypatch.setattr(
         retrieval,
         "_ensure_team_style_doc",
-        lambda query, results, k: results,
+        lambda query, results, k, artifact_paths=None: results,
     )
     monkeypatch.setattr(
         retrieval,
         "_ensure_match_summary",
-        lambda query, results, k: results,
+        lambda query, results, k, artifact_paths=None: results,
     )
 
     selected = retrieval.hybrid_search(
@@ -237,7 +237,7 @@ def test_hybrid_search_expands_siblings_before_chunk_selection(monkeypatch):
     monkeypatch.setattr(
         retrieval,
         "bm25_search",
-        lambda query, k=20: [
+        lambda query, k=20, artifact_paths=None: [
             {**FRANCE_TEAM_CHUNKS[0], "rank": 1, "source": "bm25"},
             unrelated_chunk,
         ],
@@ -245,27 +245,27 @@ def test_hybrid_search_expands_siblings_before_chunk_selection(monkeypatch):
     monkeypatch.setattr(
         retrieval,
         "dense_search",
-        lambda query, k=20, level_filter=None: [],
+        lambda query, k=20, level_filter=None, artifact_paths=None: [],
     )
     monkeypatch.setattr(
         retrieval,
         "_load_chunks",
-        lambda: FRANCE_TEAM_CHUNKS + [unrelated_chunk],
+        lambda path=None: FRANCE_TEAM_CHUNKS + [unrelated_chunk],
     )
     monkeypatch.setattr(
         retrieval,
         "_ensure_comparison_entities",
-        lambda query, results, k: results,
+        lambda query, results, k, artifact_paths=None: results,
     )
     monkeypatch.setattr(
         retrieval,
         "_ensure_team_style_doc",
-        lambda query, results, k: results,
+        lambda query, results, k, artifact_paths=None: results,
     )
     monkeypatch.setattr(
         retrieval,
         "_ensure_match_summary",
-        lambda query, results, k: results,
+        lambda query, results, k, artifact_paths=None: results,
     )
 
     selected = retrieval.hybrid_search(

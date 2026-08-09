@@ -9,11 +9,24 @@ Output: BM25 index, TF-IDF matrix, sentence embeddings
 
 The hybrid_search() function combines BM25 lexical matching with dense
 embedding similarity using min-max normalization and weighted fusion.
+
+Run directly, reads the selected competition/season's chunks.json and
+writes its indices/bm25.pkl and embeddings/embeddings.npy (see
+src/artifacts.py's resolve_output_dir()). The WC2022 default
+(competition_id=43, season_id=106) reads/writes the legacy flat output/
+layout; any other competition/season uses its own namespaced
+output/competitions/<id>/<id>/ directory. Pass --namespaced to explicitly
+use the namespaced layout for a WC2022 build.
+
+Usage:
+    python 04_vector_representation.py [--competition-id ID] [--season-id ID] [--namespaced] [--quiet]
 """
 
 from __future__ import annotations
 
+import argparse
 import json
+import pickle
 import re
 from importlib import import_module
 from pathlib import Path
@@ -147,10 +160,53 @@ def hybrid_search(query: str, k: int = 5) -> list[dict]:
         if hybrid_scores[index] > 0
     ]
 
+def main() -> int:
+    from src.artifacts import resolve_output_dir
+    from src.extraction.match_facts import COMPETITION_ID, SEASON_ID
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--competition-id", type=int, default=COMPETITION_ID)
+    parser.add_argument("--season-id", type=int, default=SEASON_ID)
+    parser.add_argument("--namespaced", action="store_true",
+                        help="Use output/competitions/<id>/<id>/ even for the WC2022 default")
+    parser.add_argument("--quiet", action="store_true")
+    args = parser.parse_args()
+
+    output_dir = resolve_output_dir(args.competition_id, args.season_id,
+                                    legacy_default=not args.namespaced)
+    chunks_path = output_dir / "chunks.json"
+
+    if not chunks_path.exists():
+        print(f"Error: {chunks_path} not found. Run 03_chunking.py first.")
+        return 1
+
+    if not args.quiet:
+        print(f"Loading chunks from {chunks_path}")
+    chunks_data = json.loads(chunks_path.read_text(encoding="utf-8"))
+
+    if not args.quiet:
+        print(f"Building BM25 index for {len(chunks_data)} chunks...")
+    bm25_index = _build_bm25(chunks_data)
+
+    indices_dir = output_dir / "indices"
+    indices_dir.mkdir(parents=True, exist_ok=True)
+    with open(indices_dir / "bm25.pkl", "wb") as f:
+        pickle.dump(bm25_index, f)
+
+    if not args.quiet:
+        print(f"Generating embeddings ({MODEL_NAME})...")
+    embeddings = _build_embeddings(chunks_data)
+
+    embeddings_dir = output_dir / "embeddings"
+    embeddings_dir.mkdir(parents=True, exist_ok=True)
+    np.save(embeddings_dir / "embeddings.npy", embeddings)
+
+    if not args.quiet:
+        print(f"Wrote {indices_dir / 'bm25.pkl'}")
+        print(f"Wrote {embeddings_dir / 'embeddings.npy'}")
+
+    return 0
+
+
 if __name__ == "__main__":
-    _ensure_loaded()
-    print(f"Loaded {len(_chunks)} chunks")
-    print(f"Embedding dim: {_chunk_embeddings.shape[1]}")
-    results = hybrid_search("How many goals did Messi score?", k=3)
-    for r in results:
-        print(f"  [{r.get('level')}] score={r['score']:.4f} - {r['text'][:80]}...")
+    raise SystemExit(main())

@@ -24,6 +24,7 @@ import pickle
 import re
 from pathlib import Path
 
+from src.artifacts import ArtifactPaths
 from src.retrieval.answerability import (
     AnswerabilityAssessment,
     assess_answerability,
@@ -49,18 +50,21 @@ RRF_K = 60
 # Index Loading (LAB 8 — Step 1)
 # ---------------------------------------------------------------------------
 
-# Cache loaded indices to avoid reloading on every query
-_bm25_cache = None
-_chunks_cache = None
+# Cache loaded indices to avoid reloading on every query, keyed by resolved
+# path so different dataset namespaces (see src/artifacts.py) never share a
+# cached index/chunk list within the same process.
+_bm25_cache: dict[Path, object] = {}
+_chunks_cache: dict[Path, list[dict]] = {}
 
 
-def _load_bm25_index():
-    """Load BM25 index from disk (cached)."""
-    global _bm25_cache
-    if _bm25_cache is not None:
-        return _bm25_cache
+def _load_bm25_index(path: Path | None = None):
+    """Load BM25 index from disk (cached per resolved path)."""
+    bm25_path = path if path is not None else (INDICES_DIR / "bm25.pkl")
+    resolved = bm25_path.resolve()
 
-    bm25_path = INDICES_DIR / "bm25.pkl"
+    if resolved in _bm25_cache:
+        return _bm25_cache[resolved]
+
     if not bm25_path.exists():
         raise FileNotFoundError(
             f"BM25 index not found at {bm25_path}. "
@@ -68,27 +72,29 @@ def _load_bm25_index():
         )
 
     with open(bm25_path, "rb") as f:
-        _bm25_cache = pickle.load(f)
+        _bm25_cache[resolved] = pickle.load(f)
 
-    return _bm25_cache
+    return _bm25_cache[resolved]
 
 
-def _load_chunks() -> list[dict]:
-    """Load chunks from disk (cached)."""
-    global _chunks_cache
-    if _chunks_cache is not None:
-        return _chunks_cache
+def _load_chunks(path: Path | None = None) -> list[dict]:
+    """Load chunks from disk (cached per resolved path)."""
+    chunks_path = path if path is not None else CHUNKS_PATH
+    resolved = chunks_path.resolve()
 
-    if not CHUNKS_PATH.exists():
+    if resolved in _chunks_cache:
+        return _chunks_cache[resolved]
+
+    if not chunks_path.exists():
         raise FileNotFoundError(
-            f"Chunks not found at {CHUNKS_PATH}. "
+            f"Chunks not found at {chunks_path}. "
             "Run 03_chunking.py first."
         )
 
-    with open(CHUNKS_PATH, encoding="utf-8") as f:
-        _chunks_cache = json.load(f)
+    with open(chunks_path, encoding="utf-8") as f:
+        _chunks_cache[resolved] = json.load(f)
 
-    return _chunks_cache
+    return _chunks_cache[resolved]
 
 
 def _get_tokenizer():
@@ -107,15 +113,21 @@ def _get_tokenizer():
 # ---------------------------------------------------------------------------
 
 
-def bm25_search(query: str, k: int = 20) -> list[dict]:
+def bm25_search(query: str, k: int = 20, artifact_paths: ArtifactPaths | None = None) -> list[dict]:
     """
     Lexical retrieval using BM25.
+
+    `artifact_paths` selects a namespaced dataset's bm25.pkl/chunks.json
+    (see src/artifacts.py) instead of the module-level legacy defaults.
+    Defaults to None -- unchanged legacy WC2022 behavior.
 
     Returns list of {chunk_id, text, metadata, score, rank}.
     Retrieves more candidates (k=20) for fusion.
     """
-    bm25 = _load_bm25_index()
-    chunks = _load_chunks()
+    bm25_path = artifact_paths.bm25_index if artifact_paths is not None else None
+    chunks_path = artifact_paths.chunks if artifact_paths is not None else None
+    bm25 = _load_bm25_index(bm25_path)
+    chunks = _load_chunks(chunks_path)
     tokenize = _get_tokenizer()
 
     query_tokens = tokenize(query)
@@ -152,9 +164,19 @@ def bm25_search(query: str, k: int = 20) -> list[dict]:
 
 
 def dense_search(query: str, k: int = 20,
-                 level_filter: str | None = None) -> list[dict]:
+                 level_filter: str | None = None,
+                 persist_dir: Path = CHROMA_DIR,
+                 collection_name: str = COLLECTION_NAME,
+                 artifact_paths: ArtifactPaths | None = None) -> list[dict]:
     """
     Dense retrieval using ChromaDB embeddings.
+
+    `persist_dir`/`collection_name` default to the module-level constants
+    (unchanged behavior) but can point at a namespaced dataset's Chroma
+    directory instead (see src/artifacts.py). When `artifact_paths` is
+    given, it takes precedence over `persist_dir` (artifact_paths.chroma_dir).
+    `collection_name` stays independently controllable -- collection-name
+    namespacing itself is deferred to a later batch.
 
     Returns list of {chunk_id, text, metadata, score, rank}.
     Retrieves more candidates (k=20) for fusion.
@@ -162,10 +184,13 @@ def dense_search(query: str, k: int = 20,
     from chromadb import PersistentClient
     from src.cache import get_embedding_model
 
+    if artifact_paths is not None:
+        persist_dir = artifact_paths.chroma_dir
+
     # Use cached model (loaded once)
     model = get_embedding_model(EMBEDDING_MODEL)
-    client = PersistentClient(path=str(CHROMA_DIR))
-    collection = client.get_collection(COLLECTION_NAME)
+    client = PersistentClient(path=str(persist_dir))
+    collection = client.get_collection(collection_name)
 
     # Generate query embedding
     query_embedding = model.encode([query], normalize_embeddings=True).tolist()
@@ -330,6 +355,7 @@ def _ensure_comparison_entities(
     query: str,
     results: list[dict],
     k: int,
+    artifact_paths: ArtifactPaths | None = None,
 ) -> list[dict]:
     """
     Ensure that when a query compares two entities, both entities' L4
@@ -337,13 +363,16 @@ def _ensure_comparison_entities(
 
     Strategy: check only the top-k (not all candidates), and if an entity's
     L4 doc is missing from top-k, find it in the chunk store and prepend it.
+
+    `artifact_paths` selects a namespaced dataset's chunks.json instead of
+    the legacy default -- see src/artifacts.py.
     """
     entities = _detect_comparison_entities(query)
     if len(entities) < 2:
         return results
 
     # Load chunks for L4 lookup
-    chunks = _load_chunks()
+    chunks = _load_chunks(artifact_paths.chunks if artifact_paths is not None else None)
 
     # Check current top-k for existing L4 docs
     top_k = results[:k]
@@ -459,10 +488,14 @@ def _ensure_team_style_doc(
     query: str,
     results: list[dict],
     k: int,
+    artifact_paths: ArtifactPaths | None = None,
 ) -> list[dict]:
     """
     When a query asks about a team's playing style, ensure the team-level
     analysis document is included in the top-k results.
+
+    `artifact_paths` selects a namespaced dataset's chunks.json instead of
+    the legacy default -- see src/artifacts.py.
     """
     team_name = _detect_team_style_query(query)
     if not team_name:
@@ -482,7 +515,7 @@ def _ensure_team_style_doc(
         return results
 
     # Find team doc in chunks and prepend
-    chunks = _load_chunks()
+    chunks = _load_chunks(artifact_paths.chunks if artifact_paths is not None else None)
     for chunk in chunks:
         if chunk.get("level") == "team":
             chunk_team = (chunk.get("team_name") or
@@ -593,10 +626,14 @@ def _ensure_match_summary(
     query: str,
     results: list[dict],
     k: int,
+    artifact_paths: ArtifactPaths | None = None,
 ) -> list[dict]:
     """
     Include an L1 match summary only for a genuine match query, without
     displacing stronger retrieved results.
+
+    `artifact_paths` selects a namespaced dataset's chunks.json instead of
+    the legacy default -- see src/artifacts.py.
     """
     team_name, stage = _detect_match_query(query)
     if not team_name and not stage:
@@ -619,7 +656,7 @@ def _ensure_match_summary(
     if team_name is None and not explicit_match_intent:
         return results
 
-    chunks = _load_chunks()
+    chunks = _load_chunks(artifact_paths.chunks if artifact_paths is not None else None)
     team_lower = (team_name or "").lower()
 
     if team_name:
@@ -727,8 +764,16 @@ def _ensure_match_summary(
     return results
 
 
-def _expand_query_entity_siblings(query: str, results: list[dict]) -> list[dict]:
-    """Add sibling chunks for candidate documents whose entity appears in query."""
+def _expand_query_entity_siblings(
+    query: str, results: list[dict], artifact_paths: ArtifactPaths | None = None,
+) -> list[dict]:
+    """
+    Add sibling chunks for candidate documents whose entity appears in query.
+
+    `artifact_paths` selects a namespaced dataset's chunks.json instead of
+    the legacy default -- see src/artifacts.py. This safeguard must never
+    silently reload the legacy WC2022 chunks for another dataset's query.
+    """
     query_lower = query.casefold()
     entity_fields = ("team_name", "player_name", "home_team", "away_team")
     target_document_ids: set[str] = set()
@@ -759,7 +804,8 @@ def _expand_query_entity_siblings(query: str, results: list[dict]) -> list[dict]
     expanded = list(results)
     seen_chunk_ids = {item.get("chunk_id") for item in expanded}
 
-    for raw_chunk in _load_chunks():
+    chunks_path = artifact_paths.chunks if artifact_paths is not None else None
+    for raw_chunk in _load_chunks(chunks_path):
         raw_metadata = raw_chunk.get("metadata", {})
         if not isinstance(raw_metadata, dict):
             raw_metadata = {}
@@ -802,6 +848,7 @@ def hybrid_search(
     bm25_k: int = 20,
     dense_k: int = 20,
     level_filter: str | None = None,
+    artifact_paths: ArtifactPaths | None = None,
 ) -> list[dict]:
     """
     Complete hybrid retrieval pipeline.
@@ -819,15 +866,22 @@ def hybrid_search(
         bm25_k: Number of BM25 candidates to retrieve
         dense_k: Number of dense candidates to retrieve
         level_filter: Optional filter by document level
+        artifact_paths: selects a namespaced dataset's BM25 index,
+            chunks.json, and Chroma directory (see src/artifacts.py)
+            instead of the legacy WC2022 defaults. Defaults to None --
+            unchanged legacy behavior. Threaded through every helper below
+            (including the sibling-expansion safeguard) so no step
+            silently falls back to another dataset's artifacts.
 
     Returns:
         Top-K results with RRF scores.
     """
     # Step 1: BM25 retrieval
-    bm25_results = bm25_search(query, k=bm25_k)
+    bm25_results = bm25_search(query, k=bm25_k, artifact_paths=artifact_paths)
 
     # Step 2: Dense retrieval
-    dense_results = dense_search(query, k=dense_k, level_filter=level_filter)
+    dense_results = dense_search(query, k=dense_k, level_filter=level_filter,
+                                 artifact_paths=artifact_paths)
 
     # Step 3: Merge via RRF
     merged = reciprocal_rank_fusion([bm25_results, dense_results])
@@ -836,16 +890,16 @@ def hybrid_search(
     reranked = rerank(merged, query)
 
     # Step 5: Ensure comparison entities' L4 docs are included
-    reranked = _ensure_comparison_entities(query, reranked, k)
+    reranked = _ensure_comparison_entities(query, reranked, k, artifact_paths=artifact_paths)
 
     # Step 6: Ensure team-level doc for style queries
-    reranked = _ensure_team_style_doc(query, reranked, k)
+    reranked = _ensure_team_style_doc(query, reranked, k, artifact_paths=artifact_paths)
 
     # Step 7: Ensure Level-1 match summary for match-level queries
-    reranked = _ensure_match_summary(query, reranked, k)
+    reranked = _ensure_match_summary(query, reranked, k, artifact_paths=artifact_paths)
 
     # Step 8: Expand siblings for query-matched entity documents
-    expanded = _expand_query_entity_siblings(query, reranked)
+    expanded = _expand_query_entity_siblings(query, reranked, artifact_paths=artifact_paths)
 
     # Step 9: Select chunks with answer-bearing query-facet coverage
     selected = select_relevant_chunks(query, expanded, max_chunks=k)
@@ -959,6 +1013,7 @@ def retrieve_context(
     max_length: int = 3000,
     level_filter: str | None = None,
     mode: str = "hybrid",
+    artifact_paths: ArtifactPaths | None = None,
 ) -> dict:
     """
     Retrieve context for a query.
@@ -969,14 +1024,18 @@ def retrieve_context(
         max_length: Max context length
         level_filter: Optional filter by document level
         mode: "hybrid" (default) or "semantic" (dense-only)
+        artifact_paths: selects a namespaced dataset's BM25/chunks/Chroma
+            artifacts (see src/artifacts.py) instead of the legacy WC2022
+            defaults. Defaults to None -- unchanged legacy behavior.
 
     Returns:
         {query, context, chunks, num_chunks, mode}
     """
     if mode == "hybrid":
-        chunks = hybrid_search(query, k=k, level_filter=level_filter)
+        chunks = hybrid_search(query, k=k, level_filter=level_filter, artifact_paths=artifact_paths)
     else:
-        chunks = semantic_search(query, k=k, level_filter=level_filter)
+        persist_dir = artifact_paths.chroma_dir if artifact_paths is not None else CHROMA_DIR
+        chunks = semantic_search(query, k=k, level_filter=level_filter, persist_dir=persist_dir)
 
     context = build_context(chunks, max_length)
 
@@ -1516,11 +1575,24 @@ def route_query(query: str) -> Route:
                      semantic_query=query)
 
 
-def execute_route(route: Route, semantic_k: int = 3, original_query: str = "") -> RoutedResult:
-    """Execute a routed query, returning structured and/or semantic results."""
+def execute_route(
+    route: Route,
+    semantic_k: int = 3,
+    original_query: str = "",
+    artifact_paths: ArtifactPaths | None = None,
+) -> RoutedResult:
+    """
+    Execute a routed query, returning structured and/or semantic results.
+
+    `artifact_paths` selects a namespaced dataset (see src/artifacts.py):
+    the structured path resolves against artifact_paths.match_facts and
+    every semantic/hybrid retrieval call uses artifact_paths' BM25/chunks/
+    Chroma artifacts. Defaults to None -- unchanged legacy WC2022 behavior.
+    """
     structured_result = None
     semantic_chunks = None
     context = ""
+    match_facts_path = artifact_paths.match_facts if artifact_paths is not None else None
 
     # For hybrid comparison queries, run structured queries for each entity
     comparison_entities = _detect_comparison(route.semantic_query or "")
@@ -1530,7 +1602,7 @@ def execute_route(route: Route, semantic_k: int = 3, original_query: str = "") -
             sq = StructuredQuery(intent="numeric", entity="player", metric="goals",
                                  aggregation="sum", entity_name=entity_name)
             try:
-                result = structured_resolve(sq)
+                result = structured_resolve(sq, data_path=match_facts_path)
                 entity_results.append((entity_name, result))
             except Exception as e:
                 print(f"Structured resolution failed for {entity_name}: {e}")
@@ -1555,7 +1627,7 @@ def execute_route(route: Route, semantic_k: int = 3, original_query: str = "") -
 
     elif route.path in ("structured", "hybrid") and route.structured_query:
         try:
-            structured_result = structured_resolve(route.structured_query)
+            structured_result = structured_resolve(route.structured_query, data_path=match_facts_path)
         except Exception as e:
             print(f"Structured resolution failed: {e}")
 
@@ -1574,7 +1646,10 @@ def execute_route(route: Route, semantic_k: int = 3, original_query: str = "") -
                 )
         elif structured_result is not None and structured_result.status == "empty":
             try:
-                fallback_chunks = hybrid_search(route.semantic_query or route.structured_query.entity_name or "", k=semantic_k)
+                fallback_chunks = hybrid_search(
+                    route.semantic_query or route.structured_query.entity_name or "",
+                    k=semantic_k, artifact_paths=artifact_paths,
+                )
                 if fallback_chunks:
                     fallback_context = (
                         "NOTE: The structured data did not contain a direct answer to this question. "
@@ -1590,7 +1665,8 @@ def execute_route(route: Route, semantic_k: int = 3, original_query: str = "") -
 
     if route.path in ("semantic", "hybrid"):
         try:
-            semantic_chunks = hybrid_search(route.semantic_query or "", k=semantic_k)
+            semantic_chunks = hybrid_search(route.semantic_query or "", k=semantic_k,
+                                            artifact_paths=artifact_paths)
             context = build_context(semantic_chunks)
         except Exception as e:
             print(f"Semantic search failed: {e}")
@@ -1623,10 +1699,18 @@ def execute_route(route: Route, semantic_k: int = 3, original_query: str = "") -
     )
 
 
-def route_and_execute(query: str, semantic_k: int = 3) -> RoutedResult:
-    """Route and execute a query in one step."""
+def route_and_execute(
+    query: str, semantic_k: int = 3, artifact_paths: ArtifactPaths | None = None,
+) -> RoutedResult:
+    """
+    Route and execute a query in one step.
+
+    `artifact_paths` selects a namespaced dataset (see src/artifacts.py)
+    threaded through to execute_route(). Defaults to None -- unchanged
+    legacy WC2022 behavior.
+    """
     route = route_query(query)
-    return execute_route(route, semantic_k, original_query=query)
+    return execute_route(route, semantic_k, original_query=query, artifact_paths=artifact_paths)
 
 
 # ---------------------------------------------------------------------------
@@ -1637,11 +1721,23 @@ def route_and_execute(query: str, semantic_k: int = 3) -> RoutedResult:
 def main() -> int:
     import argparse
 
+    from src.extraction.match_facts import COMPETITION_ID, SEASON_ID
+
     parser = argparse.ArgumentParser(description="Query routing and retrieval")
     parser.add_argument("query", help="User query")
     parser.add_argument("--k", type=int, default=5, help="Number of semantic results")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    parser.add_argument("--competition-id", type=int, default=COMPETITION_ID)
+    parser.add_argument("--season-id", type=int, default=SEASON_ID)
+    parser.add_argument("--namespaced", action="store_true",
+                        help="Use output/competitions/<id>/<id>/ even for the WC2022 default")
     args = parser.parse_args()
+
+    is_legacy_wc2022 = (args.competition_id, args.season_id) == (COMPETITION_ID, SEASON_ID)
+    if is_legacy_wc2022 and not args.namespaced:
+        artifact_paths = None
+    else:
+        artifact_paths = ArtifactPaths(args.competition_id, args.season_id)
 
     print(f"Query: {args.query}")
     print()
@@ -1657,7 +1753,7 @@ def main() -> int:
             print(f"Semantic query: {route.semantic_query}")
     print()
 
-    result = execute_route(route, args.k)
+    result = execute_route(route, args.k, artifact_paths=artifact_paths)
     print(result.explanation)
 
     if result.structured_result:

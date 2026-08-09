@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from src.retrieval.answerability import assess_answerability
 
@@ -116,7 +116,7 @@ def test_semantic_route_exposes_answerability_assessment(monkeypatch):
     monkeypatch.setattr(
         retrieval,
         "hybrid_search",
-        lambda query, k=3: chunks,
+        lambda query, k=3, artifact_paths=None: chunks,
     )
 
     result = retrieval.execute_route(

@@ -406,6 +406,7 @@ def resolve(
     query: StructuredQuery,
     data: dict | None = None,
     stage_taxonomy: StageTaxonomy | None = None,
+    data_path: Path | None = None,
 ) -> StructuredResult:
     """
     Execute a StructuredQuery against match_facts.json.
@@ -424,7 +425,16 @@ def resolve(
     unchanged behavior unless a caller supplies a different competition's
     taxonomy (see src/stage_taxonomy.py).
 
-    Results are cached and automatically invalidated when match_facts.json changes.
+    `data_path` selects which match_facts.json to load and cache against
+    when `data` is not supplied explicitly — e.g. a namespaced competition/
+    season artifact (see src/artifacts.py). Defaults to None, which falls
+    back to the module-level DATA_PATH (the legacy output/match_facts.json
+    default) — unchanged behavior unless a caller supplies a different path.
+    Ignored when `data` is supplied explicitly.
+
+    Results are cached and automatically invalidated when the selected
+    match_facts.json changes (see src/cache.py) — the cache entry is bound
+    to `data_path`, so two different datasets never share a cache hit.
     """
     from src.cache import get_cached_structured_result, set_cached_structured_result
 
@@ -445,14 +455,17 @@ def resolve(
         cache_key += ":" + json.dumps(taxonomy_key, sort_keys=True)
 
     # Explicit in-memory data must never share the file-backed cache.
-    # Only the data=None path is tied to output/match_facts.json.
+    # Only the data=None path is tied to a match_facts.json file, and the
+    # cache is bound to the actual path selected (data_path, defaulting to
+    # DATA_PATH), never a fixed unrelated location.
     explicit_data = data is not None
+    load_path = data_path if data_path is not None else DATA_PATH
 
     if not explicit_data:
-        cached = get_cached_structured_result(cache_key)
+        cached = get_cached_structured_result(cache_key, data_path=load_path)
         if cached is not None:
             return cached
-        data = _load_data()
+        data = _load_data(load_path)
 
     # Validate query using MetricKind-aware validation
     validation = validate_query(query, stage_taxonomy=stage_taxonomy)
@@ -680,9 +693,10 @@ def resolve(
         explanation=explanation,
     )
 
-    # Cache only results resolved from the file-backed dataset.
+    # Cache only results resolved from the file-backed dataset, bound to
+    # the actual path that was loaded.
     if not explicit_data:
-        set_cached_structured_result(cache_key, result)
+        set_cached_structured_result(cache_key, result, data_path=load_path)
 
     return result
 

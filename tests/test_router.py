@@ -256,7 +256,7 @@ def test_match_summary_uses_correct_final_and_preserves_first_result(monkeypatch
         },
     ]
 
-    monkeypatch.setattr(router, "_load_chunks", lambda: chunks)
+    monkeypatch.setattr(router, "_load_chunks", lambda path=None: chunks)
 
     boosted = router._ensure_match_summary(
         "What were the key events in the Argentina vs France Final?",
@@ -298,7 +298,7 @@ def test_match_summary_skips_player_performance(monkeypatch):
         }
     ]
 
-    monkeypatch.setattr(router, "_load_chunks", lambda: chunks)
+    monkeypatch.setattr(router, "_load_chunks", lambda path=None: chunks)
 
     assert router._ensure_match_summary(
         "How did Messi perform against Croatia in the semi-final?",
@@ -324,7 +324,7 @@ def test_match_summary_skips_tournament_journey(monkeypatch):
         }
     ]
 
-    monkeypatch.setattr(router, "_load_chunks", lambda: chunks)
+    monkeypatch.setattr(router, "_load_chunks", lambda path=None: chunks)
 
     assert router._ensure_match_summary(
         "How did Morocco reach the semi-finals, and what style did they use?",

@@ -6,15 +6,28 @@ Uses sentence-transformers embeddings (all-MiniLM-L6-v2).
 
 Input: chunks from 03_chunking.py
 Output: ChromaDB persistent store at output/chroma_db/
+
+The WC2022 default (competition_id=43, season_id=106) reads chunks from
+and persists Chroma to the legacy flat output/ layout; any other
+competition/season uses its own namespaced
+output/competitions/<id>/<id>/chroma_db/ directory (see
+src/artifacts.py's resolve_output_dir()). Pass --namespaced to explicitly
+use output/competitions/43/106/ for a WC2022 build instead of the legacy
+flat layout. The Chroma COLLECTION NAME itself stays the shared default
+for now -- collection-name namespacing is deferred to a later batch.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 from importlib import import_module
 from pathlib import Path
 
 import chromadb
+
+from src.artifacts import resolve_output_dir
+from src.extraction.match_facts import COMPETITION_ID, SEASON_ID
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -101,6 +114,34 @@ def get_collection(persist_dir: Path = DB_PATH,
     return client.get_collection(collection_name)
 
 
-if __name__ == "__main__":
-    create_vector_store()
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--competition-id", type=int, default=COMPETITION_ID)
+    parser.add_argument("--season-id", type=int, default=SEASON_ID)
+    parser.add_argument("--namespaced", action="store_true",
+                        help="Use output/competitions/<id>/<id>/ even for the WC2022 default")
+    args = parser.parse_args()
+
+    output_dir = resolve_output_dir(args.competition_id, args.season_id,
+                                    legacy_default=not args.namespaced)
+    chunks_path = output_dir / "chunks.json"
+
+    # Explicit failure rather than letting create_vector_store()'s own
+    # chunks=None fallback silently read the legacy output/chunks.json --
+    # that would be exactly the cross-competition fallback this batch must
+    # prevent for any non-WC2022 dataset.
+    if not chunks_path.exists():
+        print(f"Error: {chunks_path} not found. Run the chunking step for "
+              f"competition_id={args.competition_id}, season_id={args.season_id} first.")
+        return 1
+
+    with open(chunks_path, encoding="utf-8") as f:
+        chunks = json.load(f)
+
+    create_vector_store(chunks=chunks, persist_dir=output_dir / "chroma_db")
     print("Done.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

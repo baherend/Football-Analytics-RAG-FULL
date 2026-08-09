@@ -127,7 +127,7 @@ def test_file_backed_resolve_still_uses_structured_cache(monkeypatch):
     }
     load_calls = {"count": 0}
 
-    def fake_load_data():
+    def fake_load_data(path=None):
         load_calls["count"] += 1
         return data
 
@@ -164,13 +164,16 @@ def test_structured_cache_key_includes_full_stage_taxonomy_semantics(monkeypatch
     }
     seen_keys = []
 
-    monkeypatch.setattr(resolver, "_load_data", lambda: data)
+    monkeypatch.setattr(resolver, "_load_data", lambda path=None: data)
     monkeypatch.setattr(
         cache,
         "get_cached_structured_result",
-        lambda query_key: seen_keys.append(query_key) or None,
+        lambda query_key, data_path=None: seen_keys.append(query_key) or None,
     )
-    monkeypatch.setattr(cache, "set_cached_structured_result", lambda query_key, result: None)
+    monkeypatch.setattr(
+        cache, "set_cached_structured_result",
+        lambda query_key, result, data_path=None: None,
+    )
 
     query = StructuredQuery(
         intent="numeric",
@@ -212,13 +215,13 @@ def test_resolve_from_text_preserves_file_backed_structured_cache(monkeypatch):
     }
     cache_calls = {"get": 0, "set": 0}
 
-    monkeypatch.setattr(resolver, "_load_data", lambda: data)
+    monkeypatch.setattr(resolver, "_load_data", lambda path=None: data)
 
-    def fake_get(query_key):
+    def fake_get(query_key, data_path=None):
         cache_calls["get"] += 1
         return None
 
-    def fake_set(query_key, result):
+    def fake_set(query_key, result, data_path=None):
         cache_calls["set"] += 1
 
     monkeypatch.setattr(cache, "get_cached_structured_result", fake_get)

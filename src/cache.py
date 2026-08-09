@@ -55,13 +55,20 @@ def _compute_data_hash(data_path: Path = Path("output/match_facts.json")) -> str
     return hashlib.md5(hash_input.encode()).hexdigest()[:12]
 
 
-def get_cached_structured_result(query_key: str) -> Any | None:
+def get_cached_structured_result(
+    query_key: str, data_path: Path = Path("output/match_facts.json"),
+) -> Any | None:
     """
     Get a cached structured query result.
 
-    Returns None if not cached or if data has changed.
+    `data_path` binds the cache entry to the actual match_facts.json that
+    was selected (e.g. a namespaced competition/season artifact) rather
+    than always the legacy default -- see src/artifacts.py. Two different
+    paths never share a cache entry, even if their contents coincide.
+
+    Returns None if not cached or if the file at `data_path` has changed.
     """
-    data_hash = _compute_data_hash()
+    data_hash = _compute_data_hash(data_path)
     cache_key = f"{data_hash}:{query_key}"
 
     if cache_key in _structured_cache:
@@ -70,13 +77,17 @@ def get_cached_structured_result(query_key: str) -> Any | None:
     return None
 
 
-def set_cached_structured_result(query_key: str, result: Any) -> None:
+def set_cached_structured_result(
+    query_key: str, result: Any, data_path: Path = Path("output/match_facts.json"),
+) -> None:
     """
     Cache a structured query result.
 
-    Automatically invalidated when match_facts.json changes.
+    `data_path` binds the cache entry to the actual match_facts.json that
+    was selected -- see get_cached_structured_result(). Automatically
+    invalidated when that file changes.
     """
-    data_hash = _compute_data_hash()
+    data_hash = _compute_data_hash(data_path)
     cache_key = f"{data_hash}:{query_key}"
     _structured_cache[cache_key] = result
 
