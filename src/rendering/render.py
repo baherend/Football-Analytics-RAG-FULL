@@ -16,6 +16,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
 
+from src.stage_taxonomy import StageTaxonomy, WC2022_STAGE_TAXONOMY
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -506,7 +508,12 @@ LEVEL3_METRICS = [
 ]
 
 
-def render_level4(player_id, player_facts: list[dict], match_index: dict) -> Document:
+def render_level4(
+    player_id,
+    player_facts: list[dict],
+    match_index: dict,
+    stage_taxonomy: StageTaxonomy = WC2022_STAGE_TAXONOMY,
+) -> Document:
     """Render a Level 4 Player Tournament document from aggregated PlayerMatchFacts."""
     team = player_facts[0]["team_name"]
     # canonical display name: most frequent spelling
@@ -534,8 +541,12 @@ def render_level4(player_id, player_facts: list[dict], match_index: dict) -> Doc
                        match_index[r["match_id"]]["match_date"]))
     best, worst = ranked[0], ranked[-1]
 
-    group = [f for f in player_facts if f["stage"] == "Group Stage"]
-    knockout = [f for f in player_facts if f["stage"] != "Group Stage"]
+    # Group and knockout are independent, explicit classifications from the
+    # stage taxonomy — never derived from each other (a league stage is
+    # neither "not knockout => group" nor "not group => knockout"; it can
+    # legitimately be classified as neither). See src/stage_taxonomy.py.
+    group = [f for f in player_facts if stage_taxonomy.is_group_stage(f["stage"])]
+    knockout = [f for f in player_facts if stage_taxonomy.is_knockout(f["stage"])]
     contribution = (total_goals + total_assists) / matches_played if matches_played else 0.0
 
     lines = [
@@ -666,7 +677,30 @@ def render_level4(player_id, player_facts: list[dict], match_index: dict) -> Doc
 # ---------------------------------------------------------------------------
 
 
-def render_team(team_name: str, team_facts: list[dict], match_index: dict) -> Document:
+def _furthest_stage(team_facts: list[dict], stage_order: tuple[str, ...]) -> str:
+    """
+    Pick the stage the team progressed furthest to.
+
+    Uses `stage_order` (earliest -> latest) when every observed stage
+    appears in it — this reproduces the WC2022 knockout-progression
+    ranking exactly. Falls back to the stage of the chronologically last
+    match otherwise (no fixed order defined, or a stage name outside it,
+    e.g. a league's "Matchday N" labels), so rendering never crashes on an
+    unrecognized stage name.
+    """
+    if stage_order:
+        order_index = {stage: i for i, stage in enumerate(stage_order)}
+        if all(tf["stage"] in order_index for tf in team_facts):
+            return max(team_facts, key=lambda tf: order_index[tf["stage"]])["stage"]
+    return max(team_facts, key=lambda tf: tf["match_date"])["stage"]
+
+
+def render_team(
+    team_name: str,
+    team_facts: list[dict],
+    match_index: dict,
+    stage_taxonomy: StageTaxonomy = WC2022_STAGE_TAXONOMY,
+) -> Document:
     """Render a Team-level Analysis document from aggregated TeamMatchFacts."""
     matches = [f["match_id"] for f in team_facts]
     first_shots = [f["first_shot_minute"] for f in team_facts if f.get("first_shot_minute") is not None]
@@ -699,10 +733,7 @@ def render_team(team_name: str, team_facts: list[dict], match_index: dict) -> Do
     total_crosses = 0
     total_possession_events = 0
     total_match_events = 0
-    furthest_stage = team_facts[0]["stage"]
-
-    STAGE_ORDER = ["Group Stage", "Round of 16", "Quarter-finals",
-                   "Semi-finals", "3rd Place Final", "Final"]
+    furthest_stage = _furthest_stage(team_facts, stage_taxonomy.stage_order)
 
     for tf in team_facts:
         all_play_patterns.update(tf.get("play_patterns", {}))
@@ -712,8 +743,6 @@ def render_team(team_name: str, team_facts: list[dict], match_index: dict) -> Do
         if tf.get("possession_share") is not None:
             total_possession_events += tf["possession_share"]
             total_match_events += 100  # proxy
-        if STAGE_ORDER.index(tf["stage"]) > STAGE_ORDER.index(furthest_stage):
-            furthest_stage = tf["stage"]
 
     if total_match_events:
         share = total_possession_events / len(team_facts)
@@ -786,7 +815,10 @@ def render_team(team_name: str, team_facts: list[dict], match_index: dict) -> Do
 # ---------------------------------------------------------------------------
 
 
-def render_all(facts: dict) -> list[Document]:
+def render_all(
+    facts: dict,
+    stage_taxonomy: StageTaxonomy = WC2022_STAGE_TAXONOMY,
+) -> list[Document]:
     """Render all documents from match_facts.json."""
     documents = []
 
@@ -810,7 +842,7 @@ def render_all(facts: dict) -> list[Document]:
             player_groups[pid].append(pmf)
 
     for pid, pfacts in sorted(player_groups.items(), key=lambda kv: str(kv[0])):
-        documents.append(render_level4(pid, pfacts, match_index))
+        documents.append(render_level4(pid, pfacts, match_index, stage_taxonomy=stage_taxonomy))
 
     # Team-level: aggregate team facts across matches
     team_groups: dict[str, list[dict]] = defaultdict(list)
@@ -818,7 +850,7 @@ def render_all(facts: dict) -> list[Document]:
         team_groups[tf["team_name"]].append(tf)
 
     for team_name, tfacts in sorted(team_groups.items()):
-        documents.append(render_team(team_name, tfacts, match_index))
+        documents.append(render_team(team_name, tfacts, match_index, stage_taxonomy=stage_taxonomy))
 
     return documents
 

@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from src.extraction.minutes_played import build_match_context, minutes_played
+from src.stage_taxonomy import StageTaxonomy, WC2022_STAGE_TAXONOMY
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -47,9 +48,6 @@ FINAL_THIRD_X = 80
 SUCCESSFUL_OUTCOMES = frozenset({"Won", "Success", "Success In Play", "Success Out"})
 DISMISSAL_CARDS = frozenset({"Red Card", "Second Yellow"})
 ON_BALL_EVENT_TYPES = frozenset({"Pass", "Carry", "Dribble", "Shot"})
-
-STAGE_ORDER = ["Group Stage", "Round of 16", "Quarter-finals",
-               "Semi-finals", "3rd Place Final", "Final"]
 
 # §6 Level 2 build-up narration
 HIGH_XG_THRESHOLD = 0.30
@@ -425,7 +423,12 @@ def _describe_buildup(goal: dict, ordered_events: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _extract_match_facts(match: dict, events: list[dict], lineups: list[dict]) -> MatchFacts:
+def _extract_match_facts(
+    match: dict,
+    events: list[dict],
+    lineups: list[dict],
+    stage_taxonomy: StageTaxonomy = WC2022_STAGE_TAXONOMY,
+) -> MatchFacts:
     """Extract all match-level facts from one match."""
     ordered = sorted(events, key=event_sort_key)
     home = match["home_team"]["home_team_name"]
@@ -561,7 +564,7 @@ def _extract_match_facts(match: dict, events: list[dict], lineups: list[dict]) -
         match_id=match["match_id"],
         match_date=match["match_date"],
         stage=match["competition_stage"]["name"],
-        is_knockout=match["competition_stage"]["name"] != "Group Stage",
+        is_knockout=stage_taxonomy.is_knockout(match["competition_stage"]["name"]),
         stadium=(match.get("stadium", {}).get("name") or "unspecified").strip(),
         home_team=home,
         away_team=away,
@@ -1013,10 +1016,22 @@ def _extract_team_match_facts(
 # ---------------------------------------------------------------------------
 
 
-def extract_all(data_root: Path = DATA_ROOT, verbose: bool = True, competition_id: int = COMPETITION_ID, season_id: int = SEASON_ID) -> dict:
+def extract_all(
+    data_root: Path = DATA_ROOT,
+    verbose: bool = True,
+    competition_id: int = COMPETITION_ID,
+    season_id: int = SEASON_ID,
+    stage_taxonomy: StageTaxonomy = WC2022_STAGE_TAXONOMY,
+) -> dict:
     """
     Extract all structured facts for every match in the requested
     competition/season (defaults to WC 2022: competition_id=43, season_id=106).
+
+    `stage_taxonomy` controls which stages are considered knockout rounds
+    (see src/stage_taxonomy.py). Defaults to the WC2022 taxonomy, so
+    knockout classification is unchanged unless a different taxonomy is
+    supplied — e.g. a league competition passes a taxonomy with an empty
+    `knockout_stages` set.
 
     Returns:
         {
@@ -1045,7 +1060,7 @@ def extract_all(data_root: Path = DATA_ROOT, verbose: bool = True, competition_i
         lineups = load_json(data_root / "lineups" / f"{match_id}.json")
 
         # Extract match-level facts
-        mf = _extract_match_facts(match, events, lineups)
+        mf = _extract_match_facts(match, events, lineups, stage_taxonomy=stage_taxonomy)
         all_match_facts.append(mf)
 
         if not mf.card_count_matches:

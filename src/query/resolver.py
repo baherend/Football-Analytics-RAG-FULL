@@ -29,6 +29,7 @@ from src.query.vocab import (
     REGISTERED_METRICS, MetricKind, MetricSpec,
     validate_query, PERIOD_ALIASES, VALID_PERIODS,
 )
+from src.stage_taxonomy import StageTaxonomy
 
 # ---------------------------------------------------------------------------
 # Data loading
@@ -397,7 +398,11 @@ def _resolve_team_name(name: str, data: dict) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def resolve(query: StructuredQuery, data: dict | None = None) -> StructuredResult:
+def resolve(
+    query: StructuredQuery,
+    data: dict | None = None,
+    stage_taxonomy: StageTaxonomy | None = None,
+) -> StructuredResult:
     """
     Execute a StructuredQuery against match_facts.json.
 
@@ -410,6 +415,11 @@ def resolve(query: StructuredQuery, data: dict | None = None) -> StructuredResul
     metrics are detected and reported as dropped_filters rather than silently
     returning incorrect values.
 
+    `stage_taxonomy` is forwarded to validate_query() for the "stage" filter
+    check. Defaults to None, which falls back to the WC2022 vocabulary —
+    unchanged behavior unless a caller supplies a different competition's
+    taxonomy (see src/stage_taxonomy.py).
+
     Results are cached and automatically invalidated when match_facts.json changes.
     """
     from src.cache import get_cached_structured_result, set_cached_structured_result
@@ -418,7 +428,11 @@ def resolve(query: StructuredQuery, data: dict | None = None) -> StructuredResul
     # Serializing query.to_dict() ensures two queries that differ only by their
     # filters (e.g. Messi's goals overall vs. in the knockouts) get distinct
     # cache entries instead of colliding and returning each other's answers.
+    # The stage taxonomy (when not the default) is folded in too, so the same
+    # query validated under two different taxonomies never shares a cache hit.
     cache_key = json.dumps(query.to_dict(), sort_keys=True, default=str)
+    if stage_taxonomy is not None:
+        cache_key += ":" + json.dumps(sorted(stage_taxonomy.stages))
 
     # Check cache
     cached = get_cached_structured_result(cache_key)
@@ -429,7 +443,7 @@ def resolve(query: StructuredQuery, data: dict | None = None) -> StructuredResul
         data = _load_data()
 
     # Validate query using MetricKind-aware validation
-    validation = validate_query(query)
+    validation = validate_query(query, stage_taxonomy=stage_taxonomy)
     extra_dropped = []
     if validation.droppable:
         for issue in validation.droppable:

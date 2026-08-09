@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from src.stage_taxonomy import StageTaxonomy, WC2022_STAGE_TAXONOMY
+
 
 # ---------------------------------------------------------------------------
 # MetricKind / MetricSpec — explicit metric typing
@@ -170,10 +172,11 @@ SLICEABLE_DIMENSIONS: frozenset[Dimension] = frozenset({
     Dimension.OPPONENT, Dimension.STAGE, Dimension.MATCH, Dimension.PERIOD,
 })
 
-VALID_STAGES = frozenset({
-    "Group Stage", "Round of 16", "Quarter-finals",
-    "Semi-finals", "3rd Place Final", "Final",
-})
+# Backward-compatible default stage vocabulary (WC2022). Sourced from the
+# shared taxonomy module instead of being an independent literal — see
+# validate_query()'s `stage_taxonomy` parameter for validating against a
+# different competition's stage names.
+VALID_STAGES = WC2022_STAGE_TAXONOMY.stages
 
 VALID_PERIODS = frozenset({1, 2, 3, 4})
 PERIOD_ALIASES: dict[str, tuple[int, ...]] = {
@@ -241,7 +244,7 @@ class ValidationResult:
     droppable: list[ValidationIssue] = field(default_factory=list)
 
 
-def validate_query(q) -> ValidationResult:
+def validate_query(q, stage_taxonomy: StageTaxonomy | None = None) -> ValidationResult:
     """
     Fail-at-parse-time validation. Two outcomes:
 
@@ -250,6 +253,12 @@ def validate_query(q) -> ValidationResult:
       (e.g. period filter on match-only `minutes`)
 
     Accepts either StructuredQueryV2 or the legacy StructuredQuery from query_schema.
+
+    `stage_taxonomy` controls which stage names pass the "stage" filter
+    check below. Defaults to None, which falls back to the WC2022
+    vocabulary (`VALID_STAGES`) for backward compatibility — pass an
+    explicit `StageTaxonomy` (e.g. built via `StageTaxonomy.discover(...)`)
+    to validate against a different competition's stage names.
     """
     issues: list[ValidationIssue] = []
     droppable: list[ValidationIssue] = []
@@ -305,7 +314,8 @@ def validate_query(q) -> ValidationResult:
                 if hasattr(f, 'dimension') and f.dimension == 'stage':
                     stage = f.value
 
-    if stage is not None and stage not in VALID_STAGES:
+    valid_stages = stage_taxonomy.stages if stage_taxonomy is not None else VALID_STAGES
+    if stage is not None and stage not in valid_stages:
         issues.append(ValidationIssue(
             "stage", stage, f"'{stage}' is not a known competition stage"))
 
