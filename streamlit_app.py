@@ -13,6 +13,7 @@ from importlib import import_module
 import streamlit as st
 
 from src.artifacts import resolve_runtime_artifact_paths
+from src.conversation_memory import ConversationMemory
 
 # ---------------------------------------------------------------------------
 # Load RAG module
@@ -177,11 +178,15 @@ st.markdown("Ask questions about matches, players, and teams from the selected c
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+if "memory" not in st.session_state:
+    st.session_state.memory = ConversationMemory()
+
 if "dataset_key" not in st.session_state:
     st.session_state.dataset_key = dataset_key
 elif st.session_state.dataset_key != dataset_key:
     st.session_state.dataset_key = dataset_key
     st.session_state.messages = []
+    st.session_state.memory = ConversationMemory()
 
 # Display chat history
 for msg in st.session_state.messages:
@@ -208,6 +213,7 @@ if question := st.chat_input("Ask about the selected competition and season...")
                 api_key=rag.GROQ_API_KEY,
                 model=model,
                 artifact_paths=artifact_paths,
+                memory=st.session_state.memory,
             )
             st.markdown(answer)
 

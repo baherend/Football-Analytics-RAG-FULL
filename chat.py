@@ -24,6 +24,11 @@ import sys
 from pathlib import Path
 
 from src.artifacts import ArtifactPaths, resolve_runtime_artifact_paths
+from src.conversation_memory import (
+    ConversationMemory,
+    format_conversation_context,
+    resolve_pronoun_references,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +82,7 @@ class ChatState:
         self.history: list[dict] = []  # [{"role": "user/assistant", "content": ...}]
         self.max_history: int = 10
         self.artifact_paths: ArtifactPaths | None = None
+        self.memory: ConversationMemory = ConversationMemory()
 
 
 state = ChatState()
@@ -106,10 +112,17 @@ def process_query(question: str) -> str:
 
     Returns the generated answer.
     """
+    # Step 0: Search dataset-scoped conversation memory for context relevant
+    # to this question. This never supplies football facts -- it only
+    # (a) may resolve a pronoun in the *retrieval* query below, and
+    # (b) is surfaced to the LLM as labeled, non-authoritative context later.
+    relevant_turns = state.memory.search(state.artifact_paths, question)
+    retrieval_query = resolve_pronoun_references(question, relevant_turns)
+
     # Step 1: Route the query (respect mode override)
     if state.mode == "structured":
         # Force structured path — route normally but execute structured only
-        route = router_mod.route_query(question)
+        route = router_mod.route_query(retrieval_query)
         if route.path != "structured" or not route.structured_query:
             # Can't parse as structured — fall back to hybrid
             route.path = "hybrid"
@@ -119,11 +132,11 @@ def process_query(question: str) -> str:
             path="semantic",
             confidence=1.0,
             reason="User forced semantic mode",
-            semantic_query=question,
+            semantic_query=retrieval_query,
         )
     else:
         # hybrid — use normal routing
-        route = router_mod.route_query(question)
+        route = router_mod.route_query(retrieval_query)
 
     # Step 2: Execute the route
     result = router_mod.execute_route(route, semantic_k=5, artifact_paths=state.artifact_paths)
@@ -157,18 +170,13 @@ def process_query(question: str) -> str:
 
     state.last_context = context
 
-    # Step 4: Build prompt (include conversation history for follow-up support)
-    history_text = ""
-    if state.history:
-        recent = state.history[-state.max_history:]
-        history_lines = []
-        for turn in recent:
-            role = "User" if turn["role"] == "user" else "Assistant"
-            history_lines.append(f"{role}: {turn['content'][:200]}")
-        history_text = "\n".join(history_lines)
-
-    if history_text:
-        full_context = f"## Previous conversation\n{history_text}\n\n{context}"
+    # Step 4: Build prompt, prepending relevant conversation context (found in
+    # Step 0) ahead of the retrieved football evidence. It is labeled as
+    # reference-only, non-authoritative context -- never merged into or
+    # presented alongside the "Authoritative Data" section above.
+    conversation_context = format_conversation_context(relevant_turns)
+    if conversation_context:
+        full_context = f"{conversation_context}\n\n{context}"
     else:
         full_context = context
 
@@ -203,6 +211,8 @@ def process_query(question: str) -> str:
     # Trim history to max size
     if len(state.history) > state.max_history * 2:
         state.history = state.history[-state.max_history * 2:]
+
+    state.memory.add_turn(state.artifact_paths, question, answer)
 
     return answer
 
@@ -350,6 +360,7 @@ def handle_command(cmd: str):
 
     elif cmd == "/clear":
         state.history.clear()
+        state.memory.clear(state.artifact_paths)
         print("Conversation history cleared.")
 
     elif cmd in ("/quit", "/exit", "/q"):

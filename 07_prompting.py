@@ -18,6 +18,11 @@ import os
 from importlib import import_module
 
 from src.artifacts import ArtifactPaths
+from src.conversation_memory import (
+    ConversationMemory,
+    format_conversation_context,
+    resolve_pronoun_references,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -104,27 +109,45 @@ def ask_groq(prompt: str, api_key: str | None = None,
 
 def answer_question(question: str, api_key: str | None = None,
                     model: str | None = None,
-                    artifact_paths: ArtifactPaths | None = None) -> tuple[str, list[dict]]:
+                    artifact_paths: ArtifactPaths | None = None,
+                    memory: ConversationMemory | None = None) -> tuple[str, list[dict]]:
     """
     End-to-end: route query, retrieve context, build prompt, generate answer.
 
     Uses structured routing when applicable (e.g. "Who scored the most goals?"
     → structured resolver), falls back to semantic retrieval otherwise.
 
+    `memory`, if given, is searched under `artifact_paths`' dataset scope for
+    conversation turns relevant to `question`. Relevant turns may resolve a
+    pronoun (e.g. "he") in the *retrieval* query and are surfaced to the LLM
+    as clearly-labeled, non-authoritative conversation context -- they never
+    replace or get merged into the retrieved football evidence itself.
+
     Returns (answer_string, list_of_sources).
     """
     route_and_execute = import_module("06_retrieve_context").route_and_execute
-    result = route_and_execute(question, artifact_paths=artifact_paths)
+
+    relevant_turns = memory.search(artifact_paths, question) if memory is not None else []
+    retrieval_query = resolve_pronoun_references(question, relevant_turns)
+
+    result = route_and_execute(retrieval_query, artifact_paths=artifact_paths)
     context = result.context
     sources = result.semantic_chunks or []
 
-    prompt = build_prompt(question, context)
+    conversation_context = format_conversation_context(relevant_turns)
+    full_context = f"{conversation_context}\n\n{context}" if conversation_context else context
+
+    prompt = build_prompt(question, full_context)
 
     key = api_key or GROQ_API_KEY
     if not key:
         return "Missing GROQ_API_KEY. Please set it in Streamlit secrets or environment.", sources
 
     answer = ask_groq(prompt, api_key=key, model=model)
+
+    if memory is not None:
+        memory.add_turn(artifact_paths, question, answer)
+
     return answer, sources
 
 
