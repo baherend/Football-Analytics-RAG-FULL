@@ -17,6 +17,8 @@ from __future__ import annotations
 import os
 from importlib import import_module
 
+from src.artifacts import ArtifactPaths
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -30,7 +32,7 @@ GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 # Prompt Template
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are a football analytics assistant specializing in FIFA World Cup 2022 data.
+SYSTEM_PROMPT = """You are a football analytics assistant working with the selected competition and season data.
 You answer questions based ONLY on the provided context from StatsBomb match data.
 
 Rules:
@@ -101,7 +103,8 @@ def ask_groq(prompt: str, api_key: str | None = None,
 # ---------------------------------------------------------------------------
 
 def answer_question(question: str, api_key: str | None = None,
-                    model: str | None = None) -> tuple[str, list[dict]]:
+                    model: str | None = None,
+                    artifact_paths: ArtifactPaths | None = None) -> tuple[str, list[dict]]:
     """
     End-to-end: route query, retrieve context, build prompt, generate answer.
 
@@ -111,7 +114,7 @@ def answer_question(question: str, api_key: str | None = None,
     Returns (answer_string, list_of_sources).
     """
     route_and_execute = import_module("06_retrieve_context").route_and_execute
-    result = route_and_execute(question)
+    result = route_and_execute(question, artifact_paths=artifact_paths)
     context = result.context
     sources = result.semantic_chunks or []
 
@@ -126,7 +129,7 @@ def answer_question(question: str, api_key: str | None = None,
 
 
 if __name__ == "__main__":
-    question = "How many goals did Messi score in the tournament?"
+    question = "Who scored the most goals?"
     answer, sources = answer_question(question)
     print(f"Q: {question}")
     print(f"A: {answer}")

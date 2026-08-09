@@ -90,13 +90,31 @@ class ArtifactPaths:
 
 # The repository already ships legacy WC2022 artifacts directly under the
 # flat output/ layout (output/match_facts.json, output/chunks.json, ...),
-# and unmodified production read-paths (chat.py, 06_retrieve_context.py,
+# and legacy-default production read paths (06_retrieve_context.py,
 # src.query.resolver's default DATA_PATH, src.cache's default data_path)
 # still expect that exact layout. These two IDs identify that one legacy
 # dataset -- see resolve_output_dir().
 _LEGACY_WC2022_COMPETITION_ID = 43
 _LEGACY_WC2022_SEASON_ID = 106
 
+
+def resolve_runtime_artifact_paths(
+    competition_id: int = _LEGACY_WC2022_COMPETITION_ID,
+    season_id: int = _LEGACY_WC2022_SEASON_ID,
+    output_root: Path = Path("output"),
+    legacy_default: bool = True,
+) -> ArtifactPaths | None:
+    """Resolve one runtime dataset selection to the retrieval contract."""
+    is_wc2022 = (
+        competition_id,
+        season_id,
+    ) == (
+        _LEGACY_WC2022_COMPETITION_ID,
+        _LEGACY_WC2022_SEASON_ID,
+    )
+    if legacy_default and is_wc2022:
+        return None
+    return ArtifactPaths(competition_id, season_id, output_root)
 
 def resolve_output_dir(
     competition_id: int,

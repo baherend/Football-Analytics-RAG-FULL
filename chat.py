@@ -19,8 +19,11 @@ Commands:
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
+
+from src.artifacts import ArtifactPaths, resolve_runtime_artifact_paths
 
 
 # ---------------------------------------------------------------------------
@@ -73,9 +76,23 @@ class ChatState:
         self.show_route: bool = False
         self.history: list[dict] = []  # [{"role": "user/assistant", "content": ...}]
         self.max_history: int = 10
+        self.artifact_paths: ArtifactPaths | None = None
 
 
 state = ChatState()
+
+
+def configure_runtime_dataset(
+    competition_id: int = 43,
+    season_id: int = 106,
+    legacy_default: bool = True,
+) -> None:
+    """Select one dataset for all queries in this chat runtime."""
+    state.artifact_paths = resolve_runtime_artifact_paths(
+        competition_id,
+        season_id,
+        legacy_default=legacy_default,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +126,7 @@ def process_query(question: str) -> str:
         route = router_mod.route_query(question)
 
     # Step 2: Execute the route
-    result = router_mod.execute_route(route, semantic_k=5)
+    result = router_mod.execute_route(route, semantic_k=5, artifact_paths=state.artifact_paths)
 
     # Store state
     state.last_route = (
@@ -202,7 +219,7 @@ def print_separator():
 
 def interactive_mode():
     """Run interactive chat loop."""
-    print("FIFA World Cup 2022 — RAG Chat")
+    print("Football Analytics — RAG Chat")
     print("Type your question, or /help for commands.\n")
 
     while True:
@@ -350,6 +367,29 @@ def handle_command(cmd: str):
 
 def main() -> int:
     """Main entry point."""
+    parser = argparse.ArgumentParser(description="Interactive football analytics RAG chat")
+    parser.add_argument("--competition-id", type=int)
+    parser.add_argument("--season-id", type=int)
+    parser.add_argument(
+        "--namespaced",
+        action="store_true",
+        help="Use the namespaced artifact layout for the legacy default dataset",
+    )
+    parser.add_argument("question", nargs="*")
+    args = parser.parse_args()
+
+    if (args.competition_id is None) != (args.season_id is None):
+        parser.error("--competition-id and --season-id must be provided together")
+
+    if args.competition_id is None:
+        configure_runtime_dataset(legacy_default=not args.namespaced)
+    else:
+        configure_runtime_dataset(
+            args.competition_id,
+            args.season_id,
+            legacy_default=not args.namespaced,
+        )
+
     # Check for API key
     try:
         prompting_mod.get_api_key()
@@ -357,16 +397,12 @@ def main() -> int:
         print(f"Warning: {e}")
         print("You can still test retrieval, but LLM generation will fail.\n")
 
-    # Single question mode
-    if len(sys.argv) > 1:
-        question = " ".join(sys.argv[1:])
-        single_question_mode(question)
+    if args.question:
+        single_question_mode(" ".join(args.question))
         return 0
 
-    # Interactive mode
     interactive_mode()
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

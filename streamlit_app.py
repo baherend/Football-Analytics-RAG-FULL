@@ -1,5 +1,5 @@
 """
-streamlit_app.py — Streamlit UI for FIFA World Cup 2022 RAG Assistant
+streamlit_app.py — Streamlit UI for the competition-portable Football Analytics RAG Assistant
 
 Connects to the RAG pipeline via 07_prompting.py.
 Reads API key from Streamlit secrets for deployment.
@@ -11,6 +11,8 @@ Usage:
 from importlib import import_module
 
 import streamlit as st
+
+from src.artifacts import resolve_runtime_artifact_paths
 
 # ---------------------------------------------------------------------------
 # Load RAG module
@@ -31,7 +33,7 @@ except Exception:
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="FIFA World Cup 2022 — RAG Assistant",
+    page_title="Football Analytics — RAG Assistant",
     page_icon="⚽",
     layout="wide",
 )
@@ -120,6 +122,31 @@ with st.sidebar:
     st.markdown("---")
 
     st.subheader("Settings")
+
+    competition_id = st.number_input(
+        "Competition ID",
+        min_value=1,
+        value=43,
+        step=1,
+    )
+    season_id = st.number_input(
+        "Season ID",
+        min_value=1,
+        value=106,
+        step=1,
+    )
+    namespaced = st.checkbox(
+        "Use namespaced artifacts",
+        value=False,
+        help="For the legacy default dataset, opt in to output/competitions/<competition_id>/<season_id>/ instead of flat output/.",
+    )
+
+    artifact_paths = resolve_runtime_artifact_paths(
+        int(competition_id),
+        int(season_id),
+        legacy_default=not namespaced,
+    )
+    dataset_key = (int(competition_id), int(season_id), bool(namespaced))
     model = st.selectbox(
         "LLM Model",
         ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it", "mixtral-8x7b-32768"],
@@ -130,8 +157,8 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("About")
     st.markdown("""
-    This RAG assistant answers questions about the **FIFA World Cup 2022** using:
-    - **2,835+ documents** from StatsBomb open data
+    This RAG assistant answers questions about the **selected competition and season** using:
+    - **Competition-scoped documents** from StatsBomb data
     - **Hybrid retrieval** (BM25 + dense embeddings + RRF)
     - **Groq LLM** for answer generation
     """)
@@ -143,11 +170,17 @@ with st.sidebar:
 # Main UI
 # ---------------------------------------------------------------------------
 
-st.title("⚽ FIFA World Cup 2022 — RAG Assistant")
-st.markdown("Ask questions about matches, players, and teams from the 2022 FIFA World Cup.")
+st.title("⚽ Football Analytics — RAG Assistant")
+st.markdown("Ask questions about matches, players, and teams from the selected competition and season.")
 
 # Session state
 if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+if "dataset_key" not in st.session_state:
+    st.session_state.dataset_key = dataset_key
+elif st.session_state.dataset_key != dataset_key:
+    st.session_state.dataset_key = dataset_key
     st.session_state.messages = []
 
 # Display chat history
@@ -162,7 +195,7 @@ for msg in st.session_state.messages:
                     st.caption(f"Score: {src.get('rrf_score', src.get('score', 0)):.4f}")
 
 # Chat input
-if question := st.chat_input("Ask about the FIFA World Cup 2022..."):
+if question := st.chat_input("Ask about the selected competition and season..."):
     # Show user message
     with st.chat_message("user"):
         st.markdown(question)
@@ -174,6 +207,7 @@ if question := st.chat_input("Ask about the FIFA World Cup 2022..."):
                 question,
                 api_key=rag.GROQ_API_KEY,
                 model=model,
+                artifact_paths=artifact_paths,
             )
             st.markdown(answer)
 
@@ -207,12 +241,12 @@ if not st.session_state.messages:
     st.markdown("---")
     st.markdown("### 💡 Example Questions")
     examples = [
-        "How many goals did Messi score in the tournament?",
         "Who scored the most goals?",
-        "Compare Messi and Mbappé's performance",
-        "How did France play in the final?",
-        "What was Argentina's playing style?",
-        "Who had the highest xG?",
+        "Which team had the highest xG?",
+        "Which player had the most shots?",
+        "Which team created the most chances?",
+        "Who had the most assists?",
+        "How did the highest-scoring team play?",
     ]
     cols = st.columns(2)
     for i, ex in enumerate(examples):
