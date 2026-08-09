@@ -26,7 +26,7 @@ from pathlib import Path
 
 import chromadb
 
-from src.artifacts import resolve_output_dir
+from src.artifacts import resolve_output_dir, resolve_chroma_collection_name
 from src.extraction.match_facts import COMPETITION_ID, SEASON_ID
 
 # ---------------------------------------------------------------------------
@@ -70,7 +70,7 @@ def create_vector_store(chunks: list[dict] | None = None,
 
     collection = client.create_collection(
         name=collection_name,
-        metadata={"description": "FIFA World Cup 2022 documents"}
+        metadata={"description": "Football competition documents"}
     )
 
     texts = [c.get("search_text", c["text"]) for c in chunks]
@@ -124,6 +124,12 @@ def main() -> int:
 
     output_dir = resolve_output_dir(args.competition_id, args.season_id,
                                     legacy_default=not args.namespaced)
+    collection_name = resolve_chroma_collection_name(
+        args.competition_id,
+        args.season_id,
+        legacy_name=COLLECTION_NAME,
+        legacy_default=not args.namespaced,
+    )
     chunks_path = output_dir / "chunks.json"
 
     # Explicit failure rather than letting create_vector_store()'s own
@@ -138,7 +144,11 @@ def main() -> int:
     with open(chunks_path, encoding="utf-8") as f:
         chunks = json.load(f)
 
-    create_vector_store(chunks=chunks, persist_dir=output_dir / "chroma_db")
+    create_vector_store(
+        chunks=chunks,
+        persist_dir=output_dir / "chroma_db",
+        collection_name=collection_name,
+    )
     print("Done.")
     return 0
 

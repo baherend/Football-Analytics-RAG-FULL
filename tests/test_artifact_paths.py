@@ -554,7 +554,7 @@ def test_chroma_store_cli_uses_namespaced_chunks_and_persist_dir(monkeypatch, tm
     assert chroma_mod.main() == 0
     assert paths.chroma_dir.exists()
 
-    collection = chroma_mod.get_collection(persist_dir=paths.chroma_dir, collection_name=chroma_mod.COLLECTION_NAME)
+    collection = chroma_mod.get_collection(persist_dir=paths.chroma_dir, collection_name=paths.chroma_collection_name)
     assert collection.count() == 2
 
 
@@ -659,7 +659,7 @@ def test_preprocessing_cli_reads_and_writes_namespaced_documents(monkeypatch, tm
     paths = ArtifactPaths(competition_id=2, season_id=27, output_root=Path("output"))
     paths.root.mkdir(parents=True, exist_ok=True)
     paths.documents.write_text(json.dumps([
-        _fake_document("d1", "  Hello’s   world  "),
+        _fake_document("d1", "  Hello\u2019s   world  "),
     ]), encoding="utf-8")
 
     monkeypatch.setattr(sys, "argv", ["02_preprocessing.py", "--competition-id", "2",
@@ -810,7 +810,7 @@ def _build_full_dataset(paths: ArtifactPaths, chroma_mod, chunk_texts: dict) -> 
     paths.chunks.write_text(json.dumps(chunk_dicts), encoding="utf-8")
     _write_bm25_index(paths.bm25_index, chunk_ids)
     chroma_mod.create_vector_store(
-        chunks=chunk_dicts, persist_dir=paths.chroma_dir, collection_name="wc2022_documents",
+        chunks=chunk_dicts, persist_dir=paths.chroma_dir, collection_name=paths.chroma_collection_name,
     )
 
 
@@ -1029,3 +1029,173 @@ def test_cli_namespaced_flag_is_a_no_op_for_non_wc_competition(monkeypatch):
 
     assert router.main() == 0
     assert captured["artifact_paths"] == ArtifactPaths(2, 27)
+
+# ---------------------------------------------------------------------------
+# Competition Portability Batch 6: Chroma collection namespace
+# ---------------------------------------------------------------------------
+
+def test_chroma_collection_name_is_deterministic_from_competition_and_season():
+    paths = ArtifactPaths(competition_id=2, season_id=27)
+    assert paths.chroma_collection_name == "competition_2_season_27_documents"
+
+
+def test_different_competitions_have_different_chroma_collection_names():
+    a = ArtifactPaths(competition_id=2, season_id=27)
+    b = ArtifactPaths(competition_id=3, season_id=1)
+    assert a.chroma_collection_name != b.chroma_collection_name
+
+
+def test_different_seasons_have_different_chroma_collection_names():
+    a = ArtifactPaths(competition_id=2, season_id=27)
+    b = ArtifactPaths(competition_id=2, season_id=28)
+    assert a.chroma_collection_name != b.chroma_collection_name
+
+
+def test_namespaced_wc2022_has_generic_dataset_collection_name():
+    paths = ArtifactPaths(competition_id=43, season_id=106)
+    assert paths.chroma_collection_name == "competition_43_season_106_documents"
+    assert paths.chroma_collection_name != "wc2022_documents"
+
+def test_chroma_store_cli_non_wc_uses_dataset_collection_name(monkeypatch, tmp_path):
+    import sys
+    import importlib
+
+    monkeypatch.chdir(tmp_path)
+    paths = ArtifactPaths(competition_id=2, season_id=27, output_root=Path("output"))
+    _write_chunks(paths.chunks, ["a1"])
+
+    chroma_mod = importlib.import_module("05_create_chroma_store")
+    importlib.reload(chroma_mod)
+
+    captured = {}
+
+    def fake_create_vector_store(*, chunks, persist_dir, collection_name=chroma_mod.COLLECTION_NAME):
+        captured["persist_dir"] = persist_dir
+        captured["collection_name"] = collection_name
+        return object()
+
+    monkeypatch.setattr(chroma_mod, "create_vector_store", fake_create_vector_store)
+    monkeypatch.setattr(sys, "argv", [
+        "05_create_chroma_store.py",
+        "--competition-id", "2",
+        "--season-id", "27",
+    ])
+
+    assert chroma_mod.main() == 0
+    assert captured["persist_dir"] == paths.chroma_dir
+    assert captured["collection_name"] == paths.chroma_collection_name
+
+
+def test_chroma_store_cli_namespaced_wc2022_uses_dataset_collection_name(monkeypatch, tmp_path):
+    import sys
+    import importlib
+
+    monkeypatch.chdir(tmp_path)
+    paths = ArtifactPaths(competition_id=43, season_id=106, output_root=Path("output"))
+    _write_chunks(paths.chunks, ["wc1"])
+
+    chroma_mod = importlib.import_module("05_create_chroma_store")
+    importlib.reload(chroma_mod)
+
+    captured = {}
+
+    def fake_create_vector_store(*, chunks, persist_dir, collection_name=chroma_mod.COLLECTION_NAME):
+        captured["collection_name"] = collection_name
+        return object()
+
+    monkeypatch.setattr(chroma_mod, "create_vector_store", fake_create_vector_store)
+    monkeypatch.setattr(sys, "argv", [
+        "05_create_chroma_store.py",
+        "--namespaced",
+    ])
+
+    assert chroma_mod.main() == 0
+    assert captured["collection_name"] == paths.chroma_collection_name
+
+
+def test_dense_search_uses_dataset_collection_name_when_artifact_paths_are_given(monkeypatch, tmp_path):
+    from importlib import import_module
+
+    router = import_module("06_retrieve_context")
+    paths = ArtifactPaths(competition_id=2, season_id=27, output_root=tmp_path)
+
+    seen = {}
+
+    class FakeCollection:
+        def query(self, **kwargs):
+            return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+
+    class FakeClient:
+        def __init__(self, path):
+            seen["persist_dir"] = Path(path)
+
+        def get_collection(self, name):
+            seen["collection_name"] = name
+            return FakeCollection()
+
+    class FakeModel:
+        def encode(self, values, normalize_embeddings=True):
+            return type("Encoded", (), {"tolist": lambda self: [[0.0]]})()
+
+    monkeypatch.setattr("chromadb.PersistentClient", FakeClient)
+    monkeypatch.setattr("src.cache.get_embedding_model", lambda *args, **kwargs: FakeModel())
+
+    router.dense_search("test", artifact_paths=paths)
+
+    assert seen["persist_dir"] == paths.chroma_dir
+    assert seen["collection_name"] == paths.chroma_collection_name
+
+
+def test_default_dense_search_keeps_legacy_wc2022_collection_name(monkeypatch):
+    from importlib import import_module
+
+    router = import_module("06_retrieve_context")
+    seen = {}
+
+    class FakeCollection:
+        def query(self, **kwargs):
+            return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+
+    class FakeClient:
+        def __init__(self, path):
+            pass
+
+        def get_collection(self, name):
+            seen["collection_name"] = name
+            return FakeCollection()
+
+    class FakeModel:
+        def encode(self, values, normalize_embeddings=True):
+            return type("Encoded", (), {"tolist": lambda self: [[0.0]]})()
+
+    monkeypatch.setattr("chromadb.PersistentClient", FakeClient)
+    monkeypatch.setattr("src.cache.get_embedding_model", lambda *args, **kwargs: FakeModel())
+
+    router.dense_search("test")
+
+    assert seen["collection_name"] == "wc2022_documents"
+
+def test_retrieve_context_semantic_mode_uses_dataset_collection_name(monkeypatch, tmp_path):
+    from importlib import import_module
+
+    router = import_module("06_retrieve_context")
+    paths = ArtifactPaths(competition_id=2, season_id=27, output_root=tmp_path)
+    seen = {}
+
+    def fake_semantic_search(query, persist_dir=router.CHROMA_DIR,
+                             collection_name=router.COLLECTION_NAME,
+                             k=5, level_filter=None):
+        seen["persist_dir"] = persist_dir
+        seen["collection_name"] = collection_name
+        return []
+
+    monkeypatch.setattr(router, "semantic_search", fake_semantic_search)
+
+    router.retrieve_context(
+        "test",
+        mode="semantic",
+        artifact_paths=paths,
+    )
+
+    assert seen["persist_dir"] == paths.chroma_dir
+    assert seen["collection_name"] == paths.chroma_collection_name

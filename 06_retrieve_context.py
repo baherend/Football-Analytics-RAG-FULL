@@ -171,12 +171,10 @@ def dense_search(query: str, k: int = 20,
     """
     Dense retrieval using ChromaDB embeddings.
 
-    `persist_dir`/`collection_name` default to the module-level constants
-    (unchanged behavior) but can point at a namespaced dataset's Chroma
-    directory instead (see src/artifacts.py). When `artifact_paths` is
-    given, it takes precedence over `persist_dir` (artifact_paths.chroma_dir).
-    `collection_name` stays independently controllable -- collection-name
-    namespacing itself is deferred to a later batch.
+    `persist_dir`/`collection_name` default to the legacy module-level constants.
+    When `artifact_paths` is given, it selects both the namespaced Chroma
+    directory and that dataset's deterministic collection name, preventing
+    cross-competition collection reuse.
 
     Returns list of {chunk_id, text, metadata, score, rank}.
     Retrieves more candidates (k=20) for fusion.
@@ -186,6 +184,7 @@ def dense_search(query: str, k: int = 20,
 
     if artifact_paths is not None:
         persist_dir = artifact_paths.chroma_dir
+        collection_name = artifact_paths.chroma_collection_name
 
     # Use cached model (loaded once)
     model = get_embedding_model(EMBEDDING_MODEL)
@@ -1034,8 +1033,19 @@ def retrieve_context(
     if mode == "hybrid":
         chunks = hybrid_search(query, k=k, level_filter=level_filter, artifact_paths=artifact_paths)
     else:
-        persist_dir = artifact_paths.chroma_dir if artifact_paths is not None else CHROMA_DIR
-        chunks = semantic_search(query, k=k, level_filter=level_filter, persist_dir=persist_dir)
+        if artifact_paths is not None:
+            persist_dir = artifact_paths.chroma_dir
+            collection_name = artifact_paths.chroma_collection_name
+        else:
+            persist_dir = CHROMA_DIR
+            collection_name = COLLECTION_NAME
+        chunks = semantic_search(
+            query,
+            k=k,
+            level_filter=level_filter,
+            persist_dir=persist_dir,
+            collection_name=collection_name,
+        )
 
     context = build_context(chunks, max_length)
 
