@@ -17,6 +17,7 @@ import pytest
 from src.stage_taxonomy import StageTaxonomy, WC2022_STAGE_TAXONOMY
 from src.extraction.match_facts import (
     _extract_match_facts, DATA_ROOT, COMPETITION_ID, SEASON_ID, load_json,
+    WC2022_DATASET_IDENTITY,
 )
 from src.query.query_schema import StructuredQuery, Filter
 from src.query.vocab import validate_query
@@ -226,13 +227,15 @@ def test_render_all_threads_taxonomy_into_level4_for_league(monkeypatch):
     received = {}
     real_render_level4 = render_module.render_level4
 
-    def spy_render_level4(player_id, player_facts, match_index, stage_taxonomy=WC2022_STAGE_TAXONOMY):
+    def spy_render_level4(player_id, player_facts, match_index, stage_taxonomy=WC2022_STAGE_TAXONOMY,
+                           dataset_identity=WC2022_DATASET_IDENTITY):
         received["stage_taxonomy"] = stage_taxonomy
         # match_index isn't populated for this player's match_id in this
         # minimal fixture (facts["match_facts"] is deliberately empty to
         # avoid needing full Level 1/2 match fixtures) — only the
         # taxonomy-threading argument matters for this test.
-        return real_render_level4(player_id, player_facts, {1: {"match_date": "2026-01-01"}}, stage_taxonomy=stage_taxonomy)
+        return real_render_level4(player_id, player_facts, {1: {"match_date": "2026-01-01"}},
+                                   stage_taxonomy=stage_taxonomy, dataset_identity=dataset_identity)
 
     monkeypatch.setattr(render_module, "render_level4", spy_render_level4)
 

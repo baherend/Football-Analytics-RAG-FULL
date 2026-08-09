@@ -16,14 +16,12 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
 
+from src.extraction.match_facts import DatasetIdentity, WC2022_DATASET_IDENTITY
 from src.stage_taxonomy import StageTaxonomy, WC2022_STAGE_TAXONOMY
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-
-COMPETITION_ID = 43
-SEASON_ID = 106
 
 SHOOTOUT_PERIOD = 5
 HIGH_XG_THRESHOLD = 0.30
@@ -112,7 +110,7 @@ def _num(value: float, digits: int = 2) -> str:
 # ---------------------------------------------------------------------------
 
 
-def render_level1(mf: dict) -> Document:
+def render_level1(mf: dict, dataset_identity: DatasetIdentity = WC2022_DATASET_IDENTITY) -> Document:
     """Render a Level 1 Match Summary document from MatchFacts."""
     match_id = mf["match_id"]
     home = mf["home_team"]
@@ -123,7 +121,7 @@ def render_level1(mf: dict) -> Document:
     stadium = mf.get("stadium") or "an unspecified stadium"
 
     lines = [
-        f"The FIFA World Cup 2022 {stage} between {home} and {away} was played on "
+        f"The {dataset_identity.display_name} {stage} between {home} and {away} was played on "
         f"{mf['match_date']} at {stadium}."
     ]
 
@@ -227,8 +225,10 @@ def render_level1(mf: dict) -> Document:
         team_name=None,
         text=" ".join(lines),
         metadata={
-            "competition_id": COMPETITION_ID,
-            "season_id": SEASON_ID,
+            "competition_id": dataset_identity.competition_id,
+            "competition_name": dataset_identity.competition_name,
+            "season_id": dataset_identity.season_id,
+            "season_name": dataset_identity.season_name,
             "match_date": mf["match_date"],
             "stage": stage,
             "is_knockout": mf["is_knockout"],
@@ -255,11 +255,11 @@ def render_level1(mf: dict) -> Document:
 # ---------------------------------------------------------------------------
 
 
-def render_level2(mf: dict) -> Document:
+def render_level2(mf: dict, dataset_identity: DatasetIdentity = WC2022_DATASET_IDENTITY) -> Document:
     """Render a Level 2 Key Events document from MatchFacts."""
     match_id = mf["match_id"]
     lines = [
-        f"Key events from the FIFA World Cup 2022 {mf['stage']} between "
+        f"Key events from the {dataset_identity.display_name} {mf['stage']} between "
         f"{mf['home_team']} and {mf['away_team']} ({mf['match_date']})."
     ]
 
@@ -324,8 +324,10 @@ def render_level2(mf: dict) -> Document:
         match_id=match_id,
         text=" ".join(lines),
         metadata={
-            "competition_id": COMPETITION_ID,
-            "season_id": SEASON_ID,
+            "competition_id": dataset_identity.competition_id,
+            "competition_name": dataset_identity.competition_name,
+            "season_id": dataset_identity.season_id,
+            "season_name": dataset_identity.season_name,
             "match_date": mf["match_date"],
             "stage": mf["stage"],
             "is_knockout": mf["is_knockout"],
@@ -346,7 +348,7 @@ def render_level2(mf: dict) -> Document:
 # ---------------------------------------------------------------------------
 
 
-def render_level3(pmf: dict) -> Document:
+def render_level3(pmf: dict, dataset_identity: DatasetIdentity = WC2022_DATASET_IDENTITY) -> Document:
     """Render a Level 3 Player Performance document from PlayerMatchFacts."""
     match_id = pmf["match_id"]
     player = pmf["player_name"]
@@ -459,8 +461,10 @@ def render_level3(pmf: dict) -> Document:
         team_name=team,
         text=" ".join(lines),
         metadata={
-            "competition_id": COMPETITION_ID,
-            "season_id": SEASON_ID,
+            "competition_id": dataset_identity.competition_id,
+            "competition_name": dataset_identity.competition_name,
+            "season_id": dataset_identity.season_id,
+            "season_name": dataset_identity.season_name,
             "match_date": pmf["match_date"],
             "stage": stage,
             "is_knockout": pmf["is_knockout"],
@@ -513,6 +517,7 @@ def render_level4(
     player_facts: list[dict],
     match_index: dict,
     stage_taxonomy: StageTaxonomy = WC2022_STAGE_TAXONOMY,
+    dataset_identity: DatasetIdentity = WC2022_DATASET_IDENTITY,
 ) -> Document:
     """Render a Level 4 Player Tournament document from aggregated PlayerMatchFacts."""
     team = player_facts[0]["team_name"]
@@ -551,7 +556,7 @@ def render_level4(
 
     lines = [
         f"{player} of {team} appeared in {matches_played} "
-        f"match{'es' if matches_played != 1 else ''} at the FIFA World Cup 2022, "
+        f"match{'es' if matches_played != 1 else ''} at the {dataset_identity.display_name}, "
         f"playing {_num(total_minutes, 1)} minutes in total.",
         f"Across the tournament he scored {total_goals} goal"
         f"{'s' if total_goals != 1 else ''} and provided {total_assists} assist"
@@ -648,8 +653,10 @@ def render_level4(
         team_name=team,
         text=" ".join(lines),
         metadata={
-            "competition_id": COMPETITION_ID,
-            "season_id": SEASON_ID,
+            "competition_id": dataset_identity.competition_id,
+            "competition_name": dataset_identity.competition_name,
+            "season_id": dataset_identity.season_id,
+            "season_name": dataset_identity.season_name,
             "player_id": player_id,
             "name_variants": name_variants,
             "matches_played": matches_played,
@@ -700,6 +707,7 @@ def render_team(
     team_facts: list[dict],
     match_index: dict,
     stage_taxonomy: StageTaxonomy = WC2022_STAGE_TAXONOMY,
+    dataset_identity: DatasetIdentity = WC2022_DATASET_IDENTITY,
 ) -> Document:
     """Render a Team-level Analysis document from aggregated TeamMatchFacts."""
     matches = [f["match_id"] for f in team_facts]
@@ -708,7 +716,7 @@ def render_team(
 
     lines = [
         f"{team_name} played {len(matches)} match"
-        f"{'es' if len(matches) != 1 else ''} at the FIFA World Cup 2022."
+        f"{'es' if len(matches) != 1 else ''} at the {dataset_identity.display_name}."
     ]
 
     if first_shots:
@@ -790,8 +798,10 @@ def render_team(
         team_name=team_name,
         text=" ".join(lines),
         metadata={
-            "competition_id": COMPETITION_ID,
-            "season_id": SEASON_ID,
+            "competition_id": dataset_identity.competition_id,
+            "competition_name": dataset_identity.competition_name,
+            "season_id": dataset_identity.season_id,
+            "season_name": dataset_identity.season_name,
             "matches_played": len(matches),
             "match_ids": sorted(matches),
             "furthest_stage": furthest_stage,
@@ -815,11 +825,194 @@ def render_team(
 # ---------------------------------------------------------------------------
 
 
+def _classify_facts_metadata(facts: dict) -> tuple[str, int | None, str | None, int | None, str | None]:
+    """
+    Classify the identity shape of facts["metadata"] without interpreting
+    it — shared by _dataset_identity_from_facts() and
+    _resolve_render_dataset_identity() so both apply the exact same rules.
+
+    Returns (shape, competition_id, competition_name, season_id, season_name)
+    where shape is one of:
+
+        "absent"    — all four fields are None (no identity information at
+                      all, e.g. a hand-built test fixture).
+        "complete"  — all four fields are present.
+        "ids_only"  — both IDs present, both names absent. This is the
+                      shape of the real, already-shipped
+                      output/match_facts.json artifact persisted before
+                      this batch (competition_id=43, season_id=106).
+        "partial"   — anything else: exactly one ID present, or names
+                      present without both IDs, or one name present and
+                      the other missing. Structurally inconsistent —
+                      never silently guessed at.
+    """
+    meta = facts.get("metadata") or {}
+    competition_id = meta.get("competition_id")
+    competition_name = meta.get("competition_name")
+    season_id = meta.get("season_id")
+    season_name = meta.get("season_name")
+
+    has_both_ids = competition_id is not None and season_id is not None
+    has_no_ids = competition_id is None and season_id is None
+    has_both_names = competition_name is not None and season_name is not None
+    has_no_names = competition_name is None and season_name is None
+
+    if has_no_ids and has_no_names:
+        shape = "absent"
+    elif has_both_ids and has_both_names:
+        shape = "complete"
+    elif has_both_ids and has_no_names:
+        shape = "ids_only"
+    else:
+        shape = "partial"
+
+    return shape, competition_id, competition_name, season_id, season_name
+
+
+def _dataset_identity_from_facts(facts: dict) -> DatasetIdentity:
+    """
+    Derive the active DatasetIdentity from match_facts.json's own metadata
+    block (persisted by src.extraction.match_facts.persist()) rather than
+    a module-level constant. Used when no explicit dataset_identity is
+    supplied to render_all() — see _classify_facts_metadata() for the
+    shape rules.
+
+    "absent"   -> legacy/default zero-argument WC2022 fallback.
+    "complete" -> used as-is.
+    "ids_only" and the IDs are the WC2022 default (43/106) -> safe
+                  WC2022 fallback (the IDs prove it).
+    "ids_only" with any other IDs -> refuses to guess; raises ValueError.
+    "partial"  -> structurally inconsistent; raises ValueError.
+    """
+    shape, competition_id, competition_name, season_id, season_name = _classify_facts_metadata(facts)
+
+    if shape == "absent":
+        return WC2022_DATASET_IDENTITY
+
+    if shape == "complete":
+        return DatasetIdentity(
+            competition_id=competition_id,
+            competition_name=competition_name,
+            season_id=season_id,
+            season_name=season_name,
+        )
+
+    if shape == "ids_only":
+        if (competition_id, season_id) == (
+            WC2022_DATASET_IDENTITY.competition_id,
+            WC2022_DATASET_IDENTITY.season_id,
+        ):
+            return WC2022_DATASET_IDENTITY
+        raise ValueError(
+            f"facts['metadata'] has competition_id={competition_id!r}, "
+            f"season_id={season_id!r} but is missing competition_name/"
+            "season_name, and these IDs do not match the WC2022 default "
+            f"({WC2022_DATASET_IDENTITY.competition_id}/"
+            f"{WC2022_DATASET_IDENTITY.season_id}) — refusing to guess the "
+            "dataset identity. Pass an explicit dataset_identity instead."
+        )
+
+    raise ValueError(
+        "facts['metadata'] has a structurally incomplete dataset identity "
+        f"(competition_id={competition_id!r}, competition_name={competition_name!r}, "
+        f"season_id={season_id!r}, season_name={season_name!r}) — expected either "
+        "all four fields, none of them, or both IDs with both names absent. "
+        "Refusing to guess the dataset identity."
+    )
+
+
+def _resolve_render_dataset_identity(
+    facts: dict,
+    dataset_identity: DatasetIdentity | None,
+) -> DatasetIdentity:
+    """
+    Resolve the DatasetIdentity to render with, cross-checking an explicit
+    override against facts["metadata"] so it can never silently
+    contradict — or hide corruption in — what the data itself says. Uses
+    the same shape classification as _dataset_identity_from_facts() (see
+    _classify_facts_metadata()):
+
+        "absent"   -> the explicit identity is used as given (nothing to
+                      conflict with).
+        "ids_only" -> the explicit identity may supply the missing names,
+                      but its competition_id/season_id MUST equal
+                      facts["metadata"]'s IDs — mismatch raises
+                      ValueError. (This is the WC2022-legacy-artifact
+                      shape, but the rule applies to any competition with
+                      this shape, not only WC2022.)
+        "complete" -> facts["metadata"] already has a full, authoritative
+                      identity. The explicit identity must match it on
+                      ALL FOUR fields (names are not disposable labels
+                      once persisted) — any disagreement raises
+                      ValueError.
+        "partial"  -> structurally inconsistent metadata always raises,
+                      even with an explicit override — an override must
+                      never be used to paper over corrupt metadata.
+
+    With no explicit `dataset_identity`, defers entirely to
+    _dataset_identity_from_facts(facts).
+    """
+    if dataset_identity is None:
+        return _dataset_identity_from_facts(facts)
+
+    shape, meta_competition_id, meta_competition_name, meta_season_id, meta_season_name = (
+        _classify_facts_metadata(facts)
+    )
+
+    if shape == "absent":
+        return dataset_identity
+
+    if shape == "ids_only":
+        if (dataset_identity.competition_id, dataset_identity.season_id) != (
+            meta_competition_id, meta_season_id,
+        ):
+            raise ValueError(
+                f"Explicit dataset_identity (competition_id={dataset_identity.competition_id}, "
+                f"season_id={dataset_identity.season_id}) conflicts with facts['metadata'] "
+                f"(competition_id={meta_competition_id!r}, season_id={meta_season_id!r})."
+            )
+        return dataset_identity
+
+    if shape == "complete":
+        meta_identity = DatasetIdentity(
+            competition_id=meta_competition_id,
+            competition_name=meta_competition_name,
+            season_id=meta_season_id,
+            season_name=meta_season_name,
+        )
+        if dataset_identity != meta_identity:
+            raise ValueError(
+                f"Explicit dataset_identity ({dataset_identity}) conflicts with the "
+                f"complete identity already in facts['metadata'] ({meta_identity})."
+            )
+        return dataset_identity
+
+    raise ValueError(
+        "facts['metadata'] has a structurally incomplete dataset identity "
+        f"(competition_id={meta_competition_id!r}, competition_name={meta_competition_name!r}, "
+        f"season_id={meta_season_id!r}, season_name={meta_season_name!r}) — an explicit "
+        "dataset_identity cannot be used to override structurally inconsistent metadata."
+    )
+
+
 def render_all(
     facts: dict,
     stage_taxonomy: StageTaxonomy = WC2022_STAGE_TAXONOMY,
+    dataset_identity: DatasetIdentity | None = None,
 ) -> list[Document]:
-    """Render all documents from match_facts.json."""
+    """
+    Render all documents from match_facts.json.
+
+    `dataset_identity` defaults to None, which auto-derives the identity
+    from `facts["metadata"]` (see _dataset_identity_from_facts) — pass it
+    explicitly to override, but an override that disagrees with what
+    facts["metadata"] itself says raises ValueError rather than silently
+    mislabeling the corpus (see _resolve_render_dataset_identity — when
+    facts["metadata"] is complete, ALL FOUR identity fields must agree,
+    not just the IDs). Either way, every rendered document's metadata and
+    prose reflects the active competition/season, not a hardcoded one.
+    """
+    identity = _resolve_render_dataset_identity(facts, dataset_identity)
     documents = []
 
     # Build match index for Level 4 best/worst ranking
@@ -827,12 +1020,12 @@ def render_all(
 
     # Level 1 & 2: one per match
     for mf in facts["match_facts"]:
-        documents.append(render_level1(mf))
-        documents.append(render_level2(mf))
+        documents.append(render_level1(mf, dataset_identity=identity))
+        documents.append(render_level2(mf, dataset_identity=identity))
 
     # Level 3: one per player per match
     for pmf in facts["player_match_facts"]:
-        documents.append(render_level3(pmf))
+        documents.append(render_level3(pmf, dataset_identity=identity))
 
     # Level 4: aggregate player facts across matches
     player_groups: dict[int, list[dict]] = defaultdict(list)
@@ -842,7 +1035,8 @@ def render_all(
             player_groups[pid].append(pmf)
 
     for pid, pfacts in sorted(player_groups.items(), key=lambda kv: str(kv[0])):
-        documents.append(render_level4(pid, pfacts, match_index, stage_taxonomy=stage_taxonomy))
+        documents.append(render_level4(pid, pfacts, match_index, stage_taxonomy=stage_taxonomy,
+                                        dataset_identity=identity))
 
     # Team-level: aggregate team facts across matches
     team_groups: dict[str, list[dict]] = defaultdict(list)
@@ -850,7 +1044,8 @@ def render_all(
         team_groups[tf["team_name"]].append(tf)
 
     for team_name, tfacts in sorted(team_groups.items()):
-        documents.append(render_team(team_name, tfacts, match_index, stage_taxonomy=stage_taxonomy))
+        documents.append(render_team(team_name, tfacts, match_index, stage_taxonomy=stage_taxonomy,
+                                      dataset_identity=identity))
 
     return documents
 

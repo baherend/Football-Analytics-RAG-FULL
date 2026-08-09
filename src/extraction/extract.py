@@ -50,6 +50,7 @@ def main() -> int:
         result,
         competition_id=args.competition_id,
         season_id=args.season_id,
+        dataset_identity=result.get("dataset_identity"),
     )
     print(f"\nPersisted to {output_path.resolve()}")
 

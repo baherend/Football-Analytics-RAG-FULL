@@ -37,6 +37,37 @@ DATA_ROOT = Path("open-data-master/data")
 COMPETITION_ID = 43
 SEASON_ID = 106
 
+
+@dataclass(frozen=True)
+class DatasetIdentity:
+    """
+    Authoritative competition/season identity for one extracted dataset.
+
+    Always derived from the StatsBomb match records themselves (see
+    _resolve_dataset_identity) — never typed by a user or CLI argument.
+    """
+
+    competition_id: int
+    competition_name: str
+    season_id: int
+    season_name: str
+
+    @property
+    def display_name(self) -> str:
+        """Human-readable label, e.g. 'FIFA World Cup 2022'."""
+        return f"{self.competition_name} {self.season_name}"
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+WC2022_DATASET_IDENTITY = DatasetIdentity(
+    competition_id=COMPETITION_ID,
+    competition_name="FIFA World Cup",
+    season_id=SEASON_ID,
+    season_name="2022",
+)
+
 # ---------------------------------------------------------------------------
 # §1 Constants (identical to 01_documents.py)
 # ---------------------------------------------------------------------------
@@ -1016,6 +1047,64 @@ def _extract_team_match_facts(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_dataset_identity(
+    matches: list[dict],
+    requested_competition_id: int,
+    requested_season_id: int,
+) -> DatasetIdentity | None:
+    """
+    Derive the authoritative competition/season identity from the raw
+    StatsBomb match records — never typed by hand.
+
+    Every match in the file must agree on competition_id/competition_name/
+    season_id/season_name, and those IDs must match what was requested.
+    Fails explicitly (raises ValueError) on any mismatch rather than
+    silently picking one match's identity — the matches file path is
+    already namespaced by competition_id/season_id, so a mismatch means
+    the file is corrupt or mislabeled.
+
+    Returns None when there are no matches to derive identity from (e.g.
+    an empty fixture in a test) — callers fall back to a default identity.
+    """
+    if not matches:
+        return None
+
+    competition_ids = {m["competition"]["competition_id"] for m in matches}
+    competition_names = {m["competition"]["competition_name"] for m in matches}
+    season_ids = {m["season"]["season_id"] for m in matches}
+    season_names = {m["season"]["season_name"] for m in matches}
+
+    if len(competition_ids) > 1 or len(competition_names) > 1:
+        raise ValueError(
+            "Inconsistent competition identity across matches in the same "
+            f"file: competition_id={sorted(competition_ids)}, "
+            f"competition_name={sorted(competition_names)}"
+        )
+    if len(season_ids) > 1 or len(season_names) > 1:
+        raise ValueError(
+            "Inconsistent season identity across matches in the same file: "
+            f"season_id={sorted(season_ids)}, season_name={sorted(season_names)}"
+        )
+
+    competition_id = competition_ids.pop()
+    season_id = season_ids.pop()
+
+    if competition_id != requested_competition_id or season_id != requested_season_id:
+        raise ValueError(
+            f"Matches file identity (competition_id={competition_id}, "
+            f"season_id={season_id}) does not match the requested "
+            f"competition_id={requested_competition_id}, "
+            f"season_id={requested_season_id}"
+        )
+
+    return DatasetIdentity(
+        competition_id=competition_id,
+        competition_name=competition_names.pop(),
+        season_id=season_id,
+        season_name=season_names.pop(),
+    )
+
+
 def extract_all(
     data_root: Path = DATA_ROOT,
     verbose: bool = True,
@@ -1039,9 +1128,12 @@ def extract_all(
             "match_facts": list[MatchFacts],
             "team_match_facts": list[TeamMatchFacts],
             "diagnostics": dict,
+            "dataset_identity": DatasetIdentity | None,
         }
     """
     matches = load_json(data_root / "matches" / str(competition_id) / f"{season_id}.json")
+
+    dataset_identity = _resolve_dataset_identity(matches, competition_id, season_id)
 
     all_player_facts: list[PlayerMatchFacts] = []
     all_match_facts: list[MatchFacts] = []
@@ -1087,10 +1179,17 @@ def extract_all(
         "match_facts": all_match_facts,
         "team_match_facts": all_team_facts,
         "diagnostics": diagnostics,
+        "dataset_identity": dataset_identity,
     }
 
 
-def persist(result: dict, output_dir: Path = Path("output"), competition_id: int = COMPETITION_ID, season_id: int = SEASON_ID) -> Path:
+def persist(
+    result: dict,
+    output_dir: Path = Path("output"),
+    competition_id: int = COMPETITION_ID,
+    season_id: int = SEASON_ID,
+    dataset_identity: DatasetIdentity | None = None,
+) -> Path:
     """
     Persist extracted facts to JSON files.
 
@@ -1100,15 +1199,54 @@ def persist(result: dict, output_dir: Path = Path("output"), competition_id: int
     Defaults to output/ so the artifact lands where every downstream phase
     (generate_documents.py, resolver.py, cache.py) expects to read it.
 
+    Identity consistency (never writes mixed/incomplete identity):
+
+    - If `dataset_identity` is given, its competition_id/season_id MUST
+      equal the `competition_id`/`season_id` parameters — a mismatch
+      raises ValueError rather than persisting metadata that mixes two
+      identities.
+    - If `dataset_identity` is omitted and (competition_id, season_id) is
+      the WC2022 default (43, 106), WC2022_DATASET_IDENTITY is used
+      automatically — the real, already-shipped output/match_facts.json
+      artifact has exactly this shape (IDs present, names absent), so this
+      is a genuine backward-compatibility case, not a guess.
+    - If `dataset_identity` is omitted for any other competition/season,
+      persist() raises ValueError rather than writing competition_name/
+      season_name as None for an unrecognized dataset. Callers must pass
+      the dataset_identity returned by extract_all() (as
+      src/extraction/extract.py already does) — this prevents creating a
+      knowingly incomplete, non-portable artifact.
+
     Returns path to the output file.
     """
+    if dataset_identity is not None:
+        if dataset_identity.competition_id != competition_id or dataset_identity.season_id != season_id:
+            raise ValueError(
+                f"dataset_identity (competition_id={dataset_identity.competition_id}, "
+                f"season_id={dataset_identity.season_id}) does not match the requested "
+                f"competition_id={competition_id}, season_id={season_id}."
+            )
+    elif (competition_id, season_id) == (
+        WC2022_DATASET_IDENTITY.competition_id, WC2022_DATASET_IDENTITY.season_id,
+    ):
+        dataset_identity = WC2022_DATASET_IDENTITY
+    else:
+        raise ValueError(
+            f"persist() requires a dataset_identity for competition_id={competition_id}, "
+            f"season_id={season_id} — refusing to write competition_name/season_name as "
+            "None for a non-WC2022 dataset. Pass the dataset_identity returned by "
+            "extract_all()."
+        )
+
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "match_facts.json"
 
     data = {
         "metadata": {
             "competition_id": competition_id,
+            "competition_name": dataset_identity.competition_name,
             "season_id": season_id,
+            "season_name": dataset_identity.season_name,
             "extraction_date": None,  # filled by caller if needed
             "record_counts": {
                 "player_match_facts": len(result["player_match_facts"]),
