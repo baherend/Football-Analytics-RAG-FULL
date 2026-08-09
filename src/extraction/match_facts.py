@@ -1013,9 +1013,10 @@ def _extract_team_match_facts(
 # ---------------------------------------------------------------------------
 
 
-def extract_all(data_root: Path = DATA_ROOT, verbose: bool = True) -> dict:
+def extract_all(data_root: Path = DATA_ROOT, verbose: bool = True, competition_id: int = COMPETITION_ID, season_id: int = SEASON_ID) -> dict:
     """
-    Extract all structured facts from all 64 matches.
+    Extract all structured facts for every match in the requested
+    competition/season (defaults to WC 2022: competition_id=43, season_id=106).
 
     Returns:
         {
@@ -1025,7 +1026,7 @@ def extract_all(data_root: Path = DATA_ROOT, verbose: bool = True) -> dict:
             "diagnostics": dict,
         }
     """
-    matches = load_json(data_root / "matches" / str(COMPETITION_ID) / f"{SEASON_ID}.json")
+    matches = load_json(data_root / "matches" / str(competition_id) / f"{season_id}.json")
 
     all_player_facts: list[PlayerMatchFacts] = []
     all_match_facts: list[MatchFacts] = []
@@ -1074,7 +1075,7 @@ def extract_all(data_root: Path = DATA_ROOT, verbose: bool = True) -> dict:
     }
 
 
-def persist(result: dict, output_dir: Path = Path("output")) -> Path:
+def persist(result: dict, output_dir: Path = Path("output"), competition_id: int = COMPETITION_ID, season_id: int = SEASON_ID) -> Path:
     """
     Persist extracted facts to JSON files.
 
@@ -1091,8 +1092,8 @@ def persist(result: dict, output_dir: Path = Path("output")) -> Path:
 
     data = {
         "metadata": {
-            "competition_id": COMPETITION_ID,
-            "season_id": SEASON_ID,
+            "competition_id": competition_id,
+            "season_id": season_id,
             "extraction_date": None,  # filled by caller if needed
             "record_counts": {
                 "player_match_facts": len(result["player_match_facts"]),

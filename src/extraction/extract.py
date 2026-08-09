@@ -1,36 +1,56 @@
 """
 extract.py — Phase 1 CLI Entry Point
 
-Extracts structured facts from all 64 WC 2022 matches and persists them
+Extracts structured facts for a requested competition/season and persists them
 as match_facts.json — the single source of truth for all downstream phases.
 
 Usage:
-    python extract.py [--quiet]
+    python extract.py [--competition-id ID] [--season-id ID] [--quiet]
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+import argparse
 
-from src.extraction.match_facts import extract_all, persist, DATA_ROOT
+from src.extraction.match_facts import (
+    COMPETITION_ID,
+    DATA_ROOT,
+    SEASON_ID,
+    extract_all,
+    persist,
+)
 
 
 def main() -> int:
-    verbose = "--quiet" not in sys.argv
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--competition-id", type=int, default=COMPETITION_ID)
+    parser.add_argument("--season-id", type=int, default=SEASON_ID)
+    parser.add_argument("--quiet", action="store_true")
+    args = parser.parse_args()
+
+    verbose = not args.quiet
     print(f"Extracting structured facts from {DATA_ROOT.resolve()}")
 
-    result = extract_all(DATA_ROOT, verbose=verbose)
+    result = extract_all(
+        DATA_ROOT,
+        verbose=verbose,
+        competition_id=args.competition_id,
+        season_id=args.season_id,
+    )
     diag = result["diagnostics"]
 
-    print(f"\nExtraction complete:")
+    print("\nExtraction complete:")
     print(f"  Matches processed:     {diag['matches_processed']}")
     print(f"  Player-match facts:    {diag['total_player_facts']}")
     print(f"  Match facts:           {len(result['match_facts'])}")
     print(f"  Team-match facts:      {diag['total_team_facts']}")
     print(f"  Card parity failures:  {diag['card_count_mismatches'] or 'none'}")
 
-    output_path = persist(result)
+    output_path = persist(
+        result,
+        competition_id=args.competition_id,
+        season_id=args.season_id,
+    )
     print(f"\nPersisted to {output_path.resolve()}")
 
     return 0
