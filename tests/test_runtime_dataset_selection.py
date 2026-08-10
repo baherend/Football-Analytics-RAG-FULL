@@ -256,3 +256,25 @@ def test_runtime_entry_points_have_no_wc2022_specific_user_facing_residue():
     assert "FIFA World Cup 2022" not in chat_source
     assert "2,835+ documents" not in streamlit_source
     assert 'question = "How many goals did Messi score in the tournament?"' not in prompting_source
+
+def test_chat_prompting_module_exposes_required_runtime_api():
+    chat = import_module("chat")
+
+    required = (
+        "MODELS",
+        "format_context_for_prompt",
+        "get_api_key",
+        "generate_answer",
+    )
+
+    for name in required:
+        assert hasattr(chat.prompting_mod, name), f"missing prompting runtime API: {name}"
+
+    prompt = chat.prompting_mod.build_prompt(
+        "How many goals did the player score?",
+        "## Authoritative Data\nThe player scored 7 goals.",
+        has_structured=True,
+    )
+
+    assert "Authoritative" in prompt
+    assert "7 goals" in prompt

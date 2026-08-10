@@ -27,7 +27,7 @@ def _stub_router(monkeypatch, chat, route_query=None, execute_route=None):
     monkeypatch.setattr(
         chat.router_mod,
         "route_query",
-        route_query or (lambda q: SimpleNamespace(
+        route_query or (lambda q, artifact_paths=None: SimpleNamespace(
             path="semantic", confidence=1.0, reason="test", semantic_query=q,
         )),
     )
@@ -54,7 +54,7 @@ def test_chat_process_query_resolves_pronoun_via_memory_for_routing(monkeypatch)
 
     captured = {}
 
-    def fake_route_query(query):
+    def fake_route_query(query, artifact_paths=None):
         captured["routed_query"] = query
         return SimpleNamespace(path="semantic", confidence=1.0, reason="test", semantic_query=query)
 
@@ -74,7 +74,7 @@ def test_chat_process_query_leaves_query_unresolved_without_relevant_memory(monk
 
     captured = {}
 
-    def fake_route_query(query):
+    def fake_route_query(query, artifact_paths=None):
         captured["routed_query"] = query
         return SimpleNamespace(path="semantic", confidence=1.0, reason="test", semantic_query=query)
 
@@ -103,7 +103,7 @@ def test_chat_switching_dataset_does_not_reuse_previous_dataset_memory(monkeypat
 
     captured = {}
 
-    def fake_route_query(query):
+    def fake_route_query(query, artifact_paths=None):
         captured["routed_query"] = query
         return SimpleNamespace(path="semantic", confidence=1.0, reason="test", semantic_query=query)
 

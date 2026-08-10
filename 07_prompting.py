@@ -31,6 +31,33 @@ from src.conversation_memory import (
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+DEFAULT_MODEL = "haiku"
+
+MODELS = {
+    "llama-3.3-70b-versatile": {
+        "model": "llama-3.3-70b-versatile",
+        "provider": "groq",
+    },
+    "llama-3.1-8b-instant": {
+        "model": "llama-3.1-8b-instant",
+        "provider": "groq",
+    },
+    "haiku": {
+        "model": "anthropic/claude-3-haiku",
+        "provider": "openrouter",
+    },
+    "sonnet": {
+        "model": "anthropic/claude-3-sonnet",
+        "provider": "openrouter",
+    },
+}
+
+PROVIDER_KEYS = {
+    "groq": "GROQ_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -49,9 +76,29 @@ Rules:
 6. Cite sources like [Source 1], [Source 2], etc."""
 
 
-def build_prompt(question: str, context: str) -> str:
+SYSTEM_PROMPT_WITH_STRUCTURED = """You are a football analytics assistant working with the selected competition and season data.
+You answer questions based on structured data and retrieved context from StatsBomb match data.
+
+CRITICAL RULE - STRUCTURED DATA IS AUTHORITATIVE:
+When structured facts are provided as Authoritative Data, use those exact values.
+Do not independently re-derive, estimate, or contradict verified structured values.
+
+Rules:
+1. Structured facts take precedence for numeric claims.
+2. Answer ONLY from the supplied structured facts and retrieved context.
+3. NEVER guess or infer information not present in the supplied evidence.
+4. If the evidence is insufficient, say: "I don't have enough data to answer this question."
+5. Cite specific matches, players, statistics, and [Source N] references when available."""
+
+
+def build_prompt(
+    question: str,
+    context: str,
+    has_structured: bool = False,
+) -> str:
     """Build a complete prompt for the LLM."""
-    return f"""{SYSTEM_PROMPT}
+    system_prompt = SYSTEM_PROMPT_WITH_STRUCTURED if has_structured else SYSTEM_PROMPT
+    return f"""{system_prompt}
 
 ## Retrieved Context
 
@@ -64,6 +111,112 @@ def build_prompt(question: str, context: str) -> str:
 ## Answer
 
 Based on the retrieved context, here is my answer:"""
+
+
+def format_context_for_prompt(chunks: list[dict], max_length: int = 3000) -> str:
+    """Format retrieved semantic chunks into prompt-ready source blocks."""
+    if not chunks:
+        return "No relevant documents found."
+
+    parts = []
+    current_length = 0
+
+    for i, chunk in enumerate(chunks):
+        meta = chunk.get("metadata", {})
+        level = meta.get("level", "unknown")
+
+        source = f"[Source {i + 1}: Level {level}"
+        if meta.get("player_name"):
+            source += f", {meta['player_name']}"
+        if meta.get("team_name"):
+            source += f", {meta['team_name']}"
+        if meta.get("match_id"):
+            source += f", Match {meta['match_id']}"
+        source += "]"
+
+        entry = f"{source}\n{chunk['text']}\n"
+        if current_length + len(entry) > max_length:
+            break
+
+        parts.append(entry)
+        current_length += len(entry)
+
+    return "\n".join(parts)
+
+
+def get_api_key(provider: str | None = None) -> str:
+    """Return the configured API key for a generation provider."""
+    if provider is None:
+        provider = MODELS[DEFAULT_MODEL]["provider"]
+
+    key_env = PROVIDER_KEYS.get(provider, "GROQ_API_KEY")
+    key = os.environ.get(key_env)
+    if not key:
+        raise ValueError(
+            f"{key_env} not set. "
+            f"Set it with: $env:{key_env} = 'your-key-here'"
+        )
+    return key
+
+
+def generate_answer(
+    prompt: str,
+    model: str = DEFAULT_MODEL,
+    max_tokens: int = 1024,
+    temperature: float = 0.3,
+    api_key: str | None = None,
+) -> str:
+    """Generate an answer through the provider associated with ``model``."""
+    import httpx
+
+    model_config = MODELS.get(model)
+    if model_config:
+        model_name = model_config["model"]
+        provider = model_config["provider"]
+    else:
+        model_name = model
+        provider = "groq"
+
+    if not api_key:
+        key_env = PROVIDER_KEYS.get(provider, "GROQ_API_KEY")
+        api_key = os.environ.get(key_env)
+    if not api_key:
+        key_env = PROVIDER_KEYS.get(provider, "GROQ_API_KEY")
+        raise ValueError(
+            f"{key_env} not set. Pass api_key or configure the environment variable."
+        )
+
+    api_url = (
+        os.environ.get("GROQ_API_URL", GROQ_API_URL)
+        if provider == "groq"
+        else OPENROUTER_API_URL
+    )
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    if provider == "openrouter":
+        headers["HTTP-Referer"] = "https://football-analytics-rag.local"
+        headers["X-Title"] = "Football Analytics RAG"
+
+    payload = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+
+    try:
+        response = httpx.post(api_url, json=payload, headers=headers, timeout=60.0)
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code}: {e.response.text}"
+    except httpx.TimeoutException:
+        return "Error: Request timed out. Please try again."
+    except Exception as e:
+        return f"Error: {type(e).__name__}: {e}"
 
 
 # ---------------------------------------------------------------------------
