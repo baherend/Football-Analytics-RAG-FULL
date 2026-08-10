@@ -199,6 +199,12 @@ def test_render_all_derives_identity_from_facts_metadata():
     facts = _full_facts(metadata={
         "competition_id": 2, "competition_name": "Test League",
         "season_id": 27, "season_name": "2025/2026",
+        "stage_taxonomy": {
+            "stages": ["Group Stage"],
+            "knockout_stages": [],
+            "group_stages": [],
+            "stage_order": [],
+        },
     })
 
     documents = render_all(facts)
@@ -273,6 +279,12 @@ def test_render_all_accepts_explicit_dataset_identity_matching_facts_metadata():
     facts = _full_facts(metadata={
         "competition_id": 2, "competition_name": None,
         "season_id": 27, "season_name": None,
+        "stage_taxonomy": {
+            "stages": ["Group Stage"],
+            "knockout_stages": [],
+            "group_stages": [],
+            "stage_order": [],
+        },
     })
     matching_identity = DatasetIdentity(
         competition_id=2, competition_name="Test League",
@@ -367,6 +379,12 @@ def test_render_all_accepts_explicit_dataset_identity_matching_complete_metadata
     facts = _full_facts(metadata={
         "competition_id": 2, "competition_name": "Test League",
         "season_id": 27, "season_name": "2025/2026",
+        "stage_taxonomy": {
+            "stages": ["Group Stage"],
+            "knockout_stages": [],
+            "group_stages": [],
+            "stage_order": [],
+        },
     })
     same_identity = DatasetIdentity(
         competition_id=2, competition_name="Test League",

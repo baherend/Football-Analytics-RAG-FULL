@@ -123,7 +123,10 @@ def process_query(question: str) -> str:
     # Step 1: Route the query (respect mode override)
     if state.mode == "structured":
         # Force structured path — route normally but execute structured only
-        route = router_mod.route_query(retrieval_query)
+        route = router_mod.route_query(
+            retrieval_query,
+            artifact_paths=state.artifact_paths,
+        )
         if route.path != "structured" or not route.structured_query:
             # Can't parse as structured — fall back to hybrid
             route.path = "hybrid"
@@ -137,7 +140,10 @@ def process_query(question: str) -> str:
         )
     else:
         # hybrid — use normal routing
-        route = router_mod.route_query(retrieval_query)
+        route = router_mod.route_query(
+            retrieval_query,
+            artifact_paths=state.artifact_paths,
+        )
 
     # Step 2: Execute the route
     result = router_mod.execute_route(route, semantic_k=5, artifact_paths=state.artifact_paths)

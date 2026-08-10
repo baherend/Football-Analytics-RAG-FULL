@@ -1067,6 +1067,8 @@ from dataclasses import dataclass, field
 from src.query.query_schema import StructuredQuery, StructuredResult, Filter
 from src.query.resolver import resolve as structured_resolve
 from src.query.vocab import resolve_metric, resolve_aggregation, METRIC_SYNONYMS, AGGREGATION_SYNONYMS
+from src.stage_taxonomy import StageTaxonomy, WC2022_STAGE_TAXONOMY
+from src.extraction.match_facts import WC2022_DATASET_IDENTITY
 
 
 # Stage extraction patterns
@@ -1085,15 +1087,34 @@ STAGE_PATTERNS = [
 ]
 
 
-def _extract_stage_filter(query: str) -> Filter | None:
-    """Extract stage filter from query text."""
+def _extract_stage_filter(
+    query: str,
+    stage_taxonomy: StageTaxonomy = WC2022_STAGE_TAXONOMY,
+) -> Filter | None:
+    """Extract a stage filter using the active dataset taxonomy."""
     query_lower = query.lower().strip()
-    for pattern, stage_value in STAGE_PATTERNS:
+
+    # "Knockout" is semantic intent backed by the universal is_knockout field,
+    # not a literal competition-stage name.
+    if re.search(r"\bin\s+(?:the\s+)?knockout\b", query_lower):
+        return Filter("is_knockout", "eq", True)
+
+    # Active competition vocabulary: literal, case-insensitive stage names.
+    # Longest first prevents a shorter stage name from shadowing a longer one.
+    for stage_name in sorted(stage_taxonomy.stages, key=len, reverse=True):
+        pattern = rf"(?<!\w){re.escape(stage_name.lower())}(?!\w)"
         if re.search(pattern, query_lower):
-            if stage_value is None:
-                return Filter("is_knockout", "eq", True)
-            else:
+            return Filter("stage", "eq", stage_name)
+
+    # Fixed aliases are legacy WC2022 compatibility only. They must never
+    # silently impose WC2022 vocabulary on another competition.
+    if stage_taxonomy == WC2022_STAGE_TAXONOMY:
+        for pattern, stage_value in STAGE_PATTERNS:
+            if re.search(pattern, query_lower):
+                if stage_value is None:
+                    return Filter("is_knockout", "eq", True)
                 return Filter("stage", "eq", stage_value)
+
     return None
 
 
@@ -1277,11 +1298,14 @@ def classify_query(query: str) -> tuple[str, float]:
         return "hybrid", 0.6
 
 
-def parse_structured_query(query: str) -> StructuredQuery | None:
-    """Parse a query into a StructuredQuery if possible."""
+def parse_structured_query(
+    query: str,
+    stage_taxonomy: StageTaxonomy = WC2022_STAGE_TAXONOMY,
+) -> StructuredQuery | None:
+    """Parse a query into a StructuredQuery using the active stage vocabulary."""
     query_lower = query.lower().strip()
 
-    stage_filter = _extract_stage_filter(query)
+    stage_filter = _extract_stage_filter(query, stage_taxonomy=stage_taxonomy)
     opponent_filter = _extract_opponent_filter(query)
     filters = [f for f in [stage_filter, opponent_filter] if f is not None]
 
@@ -1558,12 +1582,17 @@ def parse_structured_query(query: str) -> StructuredQuery | None:
     return None
 
 
-def route_query(query: str) -> Route:
-    """Determine the routing for a query."""
+def route_query(
+    query: str,
+    artifact_paths: ArtifactPaths | None = None,
+) -> Route:
+    """Determine routing using the selected dataset's stage vocabulary."""
     classification, confidence = classify_query(query)
 
     if classification == "structured":
-        structured_query = parse_structured_query(query)
+        match_facts_path = artifact_paths.match_facts if artifact_paths is not None else None
+        stage_taxonomy = _load_active_stage_taxonomy(match_facts_path)
+        structured_query = parse_structured_query(query, stage_taxonomy=stage_taxonomy)
         if structured_query:
             return Route(path="structured", confidence=confidence,
                          reason=f"Query matches structured pattern: {structured_query.intent}",
@@ -1578,11 +1607,42 @@ def route_query(query: str) -> Route:
                      semantic_query=query)
 
     else:  # hybrid
-        structured_query = parse_structured_query(query)
+        match_facts_path = artifact_paths.match_facts if artifact_paths is not None else None
+        stage_taxonomy = _load_active_stage_taxonomy(match_facts_path)
+        structured_query = parse_structured_query(query, stage_taxonomy=stage_taxonomy)
         return Route(path="hybrid", confidence=confidence,
                      reason="Query has both structured and semantic components",
                      structured_query=structured_query,
                      semantic_query=query)
+
+
+def _load_active_stage_taxonomy(
+    match_facts_path: Path | None,
+) -> StageTaxonomy:
+    """Load the taxonomy persisted with the selected structured dataset."""
+    if match_facts_path is None:
+        return WC2022_STAGE_TAXONOMY
+
+    with open(match_facts_path, encoding="utf-8") as handle:
+        facts = json.load(handle)
+
+    metadata = facts.get("metadata") or {}
+    persisted = metadata.get("stage_taxonomy")
+    if persisted is not None:
+        return StageTaxonomy.from_dict(persisted)
+
+    competition_id = metadata.get("competition_id")
+    season_id = metadata.get("season_id")
+    if (competition_id, season_id) == (
+        WC2022_DATASET_IDENTITY.competition_id,
+        WC2022_DATASET_IDENTITY.season_id,
+    ):
+        return WC2022_STAGE_TAXONOMY
+
+    raise ValueError(
+        f"{match_facts_path} is missing persisted stage_taxonomy for "
+        "a non-WC2022 dataset; refusing to apply WC2022 stage semantics."
+    )
 
 
 def execute_route(
@@ -1603,6 +1663,11 @@ def execute_route(
     semantic_chunks = None
     context = ""
     match_facts_path = artifact_paths.match_facts if artifact_paths is not None else None
+    stage_taxonomy = (
+        _load_active_stage_taxonomy(match_facts_path)
+        if route.path in ("structured", "hybrid")
+        else None
+    )
 
     # For hybrid comparison queries, run structured queries for each entity
     comparison_entities = _detect_comparison(route.semantic_query or "")
@@ -1612,7 +1677,11 @@ def execute_route(
             sq = StructuredQuery(intent="numeric", entity="player", metric="goals",
                                  aggregation="sum", entity_name=entity_name)
             try:
-                result = structured_resolve(sq, data_path=match_facts_path)
+                result = structured_resolve(
+                    sq,
+                    data_path=match_facts_path,
+                    stage_taxonomy=stage_taxonomy,
+                )
                 entity_results.append((entity_name, result))
             except Exception as e:
                 print(f"Structured resolution failed for {entity_name}: {e}")
@@ -1637,7 +1706,11 @@ def execute_route(
 
     elif route.path in ("structured", "hybrid") and route.structured_query:
         try:
-            structured_result = structured_resolve(route.structured_query, data_path=match_facts_path)
+            structured_result = structured_resolve(
+                route.structured_query,
+                data_path=match_facts_path,
+                stage_taxonomy=stage_taxonomy,
+            )
         except Exception as e:
             print(f"Structured resolution failed: {e}")
 
@@ -1716,10 +1789,10 @@ def route_and_execute(
     Route and execute a query in one step.
 
     `artifact_paths` selects a namespaced dataset (see src/artifacts.py)
-    threaded through to execute_route(). Defaults to None -- unchanged
-    legacy WC2022 behavior.
+    and is threaded through both routing/parsing and execution. Defaults to
+    None -- unchanged legacy WC2022 behavior.
     """
-    route = route_query(query)
+    route = route_query(query, artifact_paths=artifact_paths)
     return execute_route(route, semantic_k, original_query=query, artifact_paths=artifact_paths)
 
 
@@ -1752,7 +1825,7 @@ def main() -> int:
     print(f"Query: {args.query}")
     print()
 
-    route = route_query(args.query)
+    route = route_query(args.query, artifact_paths=artifact_paths)
     print(f"Route: {route.path} (confidence: {route.confidence:.2f})")
     print(f"Reason: {route.reason}")
 

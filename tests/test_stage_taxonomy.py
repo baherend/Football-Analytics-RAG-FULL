@@ -292,3 +292,55 @@ def test_stage_taxonomy_rejects_overlapping_group_and_knockout_stages():
             knockout_stages=["Ambiguous Stage"],
             group_stages=["Ambiguous Stage"],
         )
+
+def test_stage_taxonomy_serialization_round_trip_preserves_full_semantics():
+    taxonomy = StageTaxonomy(
+        stages=frozenset({"League Phase", "Final"}),
+        knockout_stages=frozenset({"Final"}),
+        group_stages=frozenset({"League Phase"}),
+        stage_order=("League Phase", "Final"),
+    )
+
+    restored = StageTaxonomy.from_dict(taxonomy.to_dict())
+
+    assert restored == taxonomy
+
+def test_render_all_uses_persisted_stage_taxonomy_when_not_explicitly_supplied(monkeypatch):
+    import src.rendering.render as render_module
+
+    persisted_taxonomy = StageTaxonomy.discover(
+        stages=["League Phase"],
+        knockout_stages=[],
+        group_stages=[],
+    )
+    facts = {
+        "metadata": {
+            "stage_taxonomy": persisted_taxonomy.to_dict(),
+        },
+        "match_facts": [],
+        "player_match_facts": [
+            _fake_player_fact("League Phase", is_knockout=False, match_id=1),
+        ],
+        "team_match_facts": [],
+    }
+
+    received = {}
+    real_render_level4 = render_module.render_level4
+
+    def spy_render_level4(player_id, player_facts, match_index,
+                          stage_taxonomy=WC2022_STAGE_TAXONOMY,
+                          dataset_identity=WC2022_DATASET_IDENTITY):
+        received["stage_taxonomy"] = stage_taxonomy
+        return real_render_level4(
+            player_id,
+            player_facts,
+            {1: {"match_date": "2026-01-01"}},
+            stage_taxonomy=stage_taxonomy,
+            dataset_identity=dataset_identity,
+        )
+
+    monkeypatch.setattr(render_module, "render_level4", spy_render_level4)
+
+    render_module.render_all(facts)
+
+    assert received["stage_taxonomy"] == persisted_taxonomy

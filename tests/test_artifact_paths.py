@@ -146,8 +146,18 @@ def test_extraction_persist_for_competition_b_does_not_touch_competition_a(tmp_p
 def _write_match_facts(path: Path, player_name: str, goals: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
-        "metadata": {"competition_id": 2, "competition_name": "Test League",
-                     "season_id": 27, "season_name": "2025/2026"},
+        "metadata": {
+            "competition_id": 2,
+            "competition_name": "Test League",
+            "season_id": 27,
+            "season_name": "2025/2026",
+            "stage_taxonomy": {
+                "stages": ["Matchday 1"],
+                "knockout_stages": [],
+                "group_stages": [],
+                "stage_order": [],
+            },
+        },
         "player_match_facts": [{
             "player_id": 1, "player_name": player_name, "team_name": "Test FC",
             "team_id": 1, "match_id": 1, "match_date": "2026-01-01",
@@ -490,8 +500,18 @@ def test_generate_documents_cli_uses_namespaced_directory(monkeypatch, tmp_path)
     paths = ArtifactPaths(competition_id=2, season_id=27, output_root=Path("output"))
     paths.root.mkdir(parents=True, exist_ok=True)
     paths.match_facts.write_text(json.dumps({
-        "metadata": {"competition_id": 2, "competition_name": "Test League",
-                     "season_id": 27, "season_name": "2025/2026"},
+        "metadata": {
+            "competition_id": 2,
+            "competition_name": "Test League",
+            "season_id": 27,
+            "season_name": "2025/2026",
+            "stage_taxonomy": {
+                "stages": [],
+                "knockout_stages": [],
+                "group_stages": [],
+                "stage_order": [],
+            },
+        },
         "player_match_facts": [], "match_facts": [], "team_match_facts": [],
     }), encoding="utf-8")
 
@@ -826,6 +846,12 @@ def test_hybrid_search_uses_only_selected_dataset_artifacts(monkeypatch, tmp_pat
 
     monkeypatch.setattr("sentence_transformers.SentenceTransformer", _FakeEmbeddingModel)
 
+    # Isolate this test from embedding models cached by earlier tests in the
+    # same pytest process. dense_search() resolves models through src.cache,
+    # so a previously cached real 384-d model would bypass the fake 8-d model.
+    from src.cache import clear_all_caches
+    clear_all_caches()
+
     paths_a = ArtifactPaths(competition_id=2, season_id=27, output_root=tmp_path)
     paths_b = ArtifactPaths(competition_id=3, season_id=1, output_root=tmp_path)
 
@@ -948,15 +974,23 @@ def test_default_runtime_calls_remain_legacy_compatible(monkeypatch):
 
 
 def _stub_execute_route(router, monkeypatch):
-    """Replace execute_route with a spy that records artifact_paths and
-    returns a minimal RoutedResult, so main() never touches real Chroma
-    or artifacts."""
+    """Spy on CLI routing and execution without touching real artifacts."""
     captured = {}
+
+    def fake_route_query(query, artifact_paths=None):
+        captured["route_artifact_paths"] = artifact_paths
+        return router.Route(
+            path="semantic",
+            confidence=1.0,
+            reason="test",
+            semantic_query=query,
+        )
 
     def fake_execute_route(route, semantic_k=3, original_query="", artifact_paths=None):
         captured["artifact_paths"] = artifact_paths
         return router.RoutedResult(route=route, explanation="stub")
 
+    monkeypatch.setattr(router, "route_query", fake_route_query)
     monkeypatch.setattr(router, "execute_route", fake_execute_route)
     return captured
 
@@ -974,6 +1008,7 @@ def test_cli_default_query_passes_artifact_paths_none(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["06_retrieve_context.py", "How many goals did Messi score?"])
 
     assert router.main() == 0
+    assert captured["route_artifact_paths"] is None
     assert captured["artifact_paths"] is None
 
 
@@ -993,6 +1028,7 @@ def test_cli_non_wc_competition_passes_matching_artifact_paths(monkeypatch):
     ])
 
     assert router.main() == 0
+    assert captured["route_artifact_paths"] == ArtifactPaths(2, 27)
     assert captured["artifact_paths"] == ArtifactPaths(2, 27)
 
 
@@ -1010,6 +1046,7 @@ def test_cli_namespaced_flag_forces_wc2022_artifact_paths(monkeypatch):
     ])
 
     assert router.main() == 0
+    assert captured["route_artifact_paths"] == ArtifactPaths(43, 106)
     assert captured["artifact_paths"] == ArtifactPaths(43, 106)
 
 
@@ -1028,6 +1065,7 @@ def test_cli_namespaced_flag_is_a_no_op_for_non_wc_competition(monkeypatch):
     ])
 
     assert router.main() == 0
+    assert captured["route_artifact_paths"] == ArtifactPaths(2, 27)
     assert captured["artifact_paths"] == ArtifactPaths(2, 27)
 
 # ---------------------------------------------------------------------------
@@ -1199,3 +1237,123 @@ def test_retrieve_context_semantic_mode_uses_dataset_collection_name(monkeypatch
 
     assert seen["persist_dir"] == paths.chroma_dir
     assert seen["collection_name"] == paths.chroma_collection_name
+
+def test_execute_route_threads_persisted_stage_taxonomy_to_structured_resolver(monkeypatch, tmp_path):
+    from importlib import import_module
+    from types import SimpleNamespace
+    from src.stage_taxonomy import StageTaxonomy
+
+    router = import_module("06_retrieve_context")
+    paths = ArtifactPaths(competition_id=7, season_id=11, output_root=tmp_path)
+
+    taxonomy = StageTaxonomy.discover(
+        stages=["League Phase"],
+        knockout_stages=[],
+        group_stages=[],
+    )
+
+    paths.match_facts.parent.mkdir(parents=True, exist_ok=True)
+    paths.match_facts.write_text(json.dumps({
+        "metadata": {
+            "competition_id": 7,
+            "competition_name": "Synthetic League",
+            "season_id": 11,
+            "season_name": "2025",
+            "stage_taxonomy": taxonomy.to_dict(),
+        },
+        "player_match_facts": [],
+        "match_facts": [],
+        "team_match_facts": [],
+    }), encoding="utf-8")
+
+    captured = {}
+
+    def fake_structured_resolve(query, data_path=None, stage_taxonomy=None):
+        captured["data_path"] = data_path
+        captured["stage_taxonomy"] = stage_taxonomy
+        return SimpleNamespace(
+            status="resolved",
+            explanation="ok",
+            query=query,
+            aggregated_value=1,
+            data=[],
+            dropped_filters=[],
+        )
+
+    monkeypatch.setattr(router, "structured_resolve", fake_structured_resolve)
+
+    route = router.Route(
+        path="structured",
+        confidence=0.9,
+        reason="test",
+        structured_query=router.StructuredQuery(
+            intent="numeric",
+            entity="player",
+            metric="goals",
+            aggregation="sum",
+            entity_name="Test Player",
+        ),
+    )
+
+    router.execute_route(route, artifact_paths=paths)
+
+    assert captured["data_path"] == paths.match_facts
+    assert captured["stage_taxonomy"] == taxonomy
+
+def test_execute_route_comparison_threads_persisted_stage_taxonomy_to_both_resolves(monkeypatch, tmp_path):
+    from importlib import import_module
+    from types import SimpleNamespace
+    from src.stage_taxonomy import StageTaxonomy
+
+    router = import_module("06_retrieve_context")
+    paths = ArtifactPaths(competition_id=7, season_id=11, output_root=tmp_path)
+
+    taxonomy = StageTaxonomy.discover(
+        stages=["League Phase"],
+        knockout_stages=[],
+        group_stages=[],
+    )
+
+    paths.match_facts.parent.mkdir(parents=True, exist_ok=True)
+    paths.match_facts.write_text(json.dumps({
+        "metadata": {
+            "competition_id": 7,
+            "competition_name": "Synthetic League",
+            "season_id": 11,
+            "season_name": "2025",
+            "stage_taxonomy": taxonomy.to_dict(),
+        },
+        "player_match_facts": [],
+        "match_facts": [],
+        "team_match_facts": [],
+    }), encoding="utf-8")
+
+    captured = []
+
+    def fake_structured_resolve(query, data_path=None, stage_taxonomy=None):
+        captured.append((query.entity_name, data_path, stage_taxonomy))
+        return SimpleNamespace(
+            status="resolved",
+            explanation=f"{query.entity_name}: ok",
+            aggregated_value=1,
+            data=[],
+            dropped_filters=[],
+        )
+
+    monkeypatch.setattr(router, "structured_resolve", fake_structured_resolve)
+    monkeypatch.setattr(router, "hybrid_search", lambda *args, **kwargs: [])
+    monkeypatch.setattr(router, "assess_answerability", lambda **kwargs: None)
+
+    route = router.Route(
+        path="hybrid",
+        confidence=0.9,
+        reason="comparison test",
+        semantic_query="Alice vs Bob",
+    )
+
+    router.execute_route(route, artifact_paths=paths)
+
+    assert len(captured) == 2
+    assert {name for name, _, _ in captured} == {"Alice", "Bob"}
+    assert all(data_path == paths.match_facts for _, data_path, _ in captured)
+    assert all(stage_taxonomy == taxonomy for _, _, stage_taxonomy in captured)

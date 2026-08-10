@@ -1110,17 +1110,17 @@ def extract_all(
     verbose: bool = True,
     competition_id: int = COMPETITION_ID,
     season_id: int = SEASON_ID,
-    stage_taxonomy: StageTaxonomy = WC2022_STAGE_TAXONOMY,
+    stage_taxonomy: StageTaxonomy | None = None,
 ) -> dict:
     """
     Extract all structured facts for every match in the requested
     competition/season (defaults to WC 2022: competition_id=43, season_id=106).
 
-    `stage_taxonomy` controls which stages are considered knockout rounds
-    (see src/stage_taxonomy.py). Defaults to the WC2022 taxonomy, so
-    knockout classification is unchanged unless a different taxonomy is
-    supplied — e.g. a league competition passes a taxonomy with an empty
-    `knockout_stages` set.
+    `stage_taxonomy` controls the active competition-stage semantics
+    (see src/stage_taxonomy.py). When omitted, WC2022 keeps its explicit
+    legacy taxonomy; other competitions conservatively discover only the
+    observed literal stage names, with no inferred knockout/group semantics
+    or stage ordering.
 
     Returns:
         {
@@ -1134,6 +1134,17 @@ def extract_all(
     matches = load_json(data_root / "matches" / str(competition_id) / f"{season_id}.json")
 
     dataset_identity = _resolve_dataset_identity(matches, competition_id, season_id)
+
+    if stage_taxonomy is None:
+        if (competition_id, season_id) == (COMPETITION_ID, SEASON_ID):
+            stage_taxonomy = WC2022_STAGE_TAXONOMY
+        else:
+            observed_stages = {
+                match["competition_stage"]["name"]
+                for match in matches
+                if match.get("competition_stage", {}).get("name")
+            }
+            stage_taxonomy = StageTaxonomy.discover(stages=observed_stages)
 
     all_player_facts: list[PlayerMatchFacts] = []
     all_match_facts: list[MatchFacts] = []
@@ -1180,6 +1191,7 @@ def extract_all(
         "team_match_facts": all_team_facts,
         "diagnostics": diagnostics,
         "dataset_identity": dataset_identity,
+        "stage_taxonomy": stage_taxonomy,
     }
 
 
@@ -1248,6 +1260,11 @@ def persist(
             "season_id": season_id,
             "season_name": dataset_identity.season_name,
             "extraction_date": None,  # filled by caller if needed
+            **(
+                {"stage_taxonomy": result["stage_taxonomy"].to_dict()}
+                if result.get("stage_taxonomy") is not None
+                else {}
+            ),
             "record_counts": {
                 "player_match_facts": len(result["player_match_facts"]),
                 "match_facts": len(result["match_facts"]),

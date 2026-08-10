@@ -995,13 +995,47 @@ def _resolve_render_dataset_identity(
     )
 
 
+def _stage_taxonomy_from_facts(facts: dict) -> StageTaxonomy:
+    """Resolve the persisted taxonomy without guessing non-WC semantics."""
+    metadata = facts.get("metadata") or {}
+    persisted = metadata.get("stage_taxonomy")
+
+    if persisted is not None:
+        return StageTaxonomy.from_dict(persisted)
+
+    competition_id = metadata.get("competition_id")
+    season_id = metadata.get("season_id")
+
+    # Legacy zero-metadata rendering and already-shipped WC2022 artifacts.
+    if not metadata or (
+        competition_id == WC2022_DATASET_IDENTITY.competition_id
+        and season_id == WC2022_DATASET_IDENTITY.season_id
+    ):
+        return WC2022_STAGE_TAXONOMY
+
+    # A known non-WC dataset must carry the taxonomy used at extraction.
+    if competition_id is not None or season_id is not None:
+        raise ValueError(
+            "facts['metadata'] is missing stage_taxonomy for a non-WC2022 "
+            "dataset; refusing to silently apply WC2022 stage semantics."
+        )
+
+    # Metadata may contain unrelated legacy fields but no dataset identity.
+    return WC2022_STAGE_TAXONOMY
+
+
 def render_all(
     facts: dict,
-    stage_taxonomy: StageTaxonomy = WC2022_STAGE_TAXONOMY,
+    stage_taxonomy: StageTaxonomy | None = None,
     dataset_identity: DatasetIdentity | None = None,
 ) -> list[Document]:
     """
     Render all documents from match_facts.json.
+
+    `stage_taxonomy` defaults to None, which loads the taxonomy persisted in
+    facts["metadata"]. Legacy WC2022 artifacts without that field retain the
+    explicit WC2022 taxonomy; known non-WC datasets must persist their taxonomy
+    rather than silently inheriting WC2022 semantics.
 
     `dataset_identity` defaults to None, which auto-derives the identity
     from `facts["metadata"]` (see _dataset_identity_from_facts) — pass it
@@ -1013,6 +1047,8 @@ def render_all(
     prose reflects the active competition/season, not a hardcoded one.
     """
     identity = _resolve_render_dataset_identity(facts, dataset_identity)
+    if stage_taxonomy is None:
+        stage_taxonomy = _stage_taxonomy_from_facts(facts)
     documents = []
 
     # Build match index for Level 4 best/worst ranking

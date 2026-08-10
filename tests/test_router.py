@@ -379,3 +379,130 @@ if __name__ == "__main__":
     print("Running router unit tests...\n")
     failures = run_all_tests()
     raise SystemExit(1 if failures else 0)
+
+def test_parse_structured_query_recognizes_active_taxonomy_stage_without_global_alias():
+    taxonomy = router.StageTaxonomy.discover(
+        stages=["League Phase"],
+        knockout_stages=[],
+        group_stages=[],
+    )
+
+    query = router.parse_structured_query(
+        "How many goals did Messi score in the league phase?",
+        stage_taxonomy=taxonomy,
+    )
+
+    assert query is not None
+    assert query.entity_name == "Messi"
+    assert any(
+        f.dimension == "stage"
+        and f.operator == "eq"
+        and f.value == "League Phase"
+        for f in query.filters
+    )
+
+def test_route_query_uses_selected_dataset_taxonomy_for_stage_parsing(tmp_path):
+    import json
+    from src.artifacts import ArtifactPaths
+    from src.stage_taxonomy import StageTaxonomy
+
+    paths = ArtifactPaths(competition_id=7, season_id=11, output_root=tmp_path)
+    taxonomy = StageTaxonomy.discover(
+        stages=["League Phase"],
+        knockout_stages=[],
+        group_stages=[],
+    )
+
+    paths.match_facts.parent.mkdir(parents=True, exist_ok=True)
+    paths.match_facts.write_text(json.dumps({
+        "metadata": {
+            "competition_id": 7,
+            "competition_name": "Synthetic League",
+            "season_id": 11,
+            "season_name": "2025",
+            "stage_taxonomy": taxonomy.to_dict(),
+        },
+        "player_match_facts": [],
+        "match_facts": [],
+        "team_match_facts": [],
+    }), encoding="utf-8")
+
+    route = router.route_query(
+        "How many goals did Messi score in the league phase?",
+        artifact_paths=paths,
+    )
+
+    assert route.structured_query is not None
+    assert any(
+        f.dimension == "stage"
+        and f.operator == "eq"
+        and f.value == "League Phase"
+        for f in route.structured_query.filters
+    )
+
+def test_route_and_execute_threads_selected_artifact_paths_to_routing(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from src.artifacts import ArtifactPaths
+
+    selected = ArtifactPaths(competition_id=7, season_id=11, output_root=tmp_path)
+    captured = {}
+
+    fake_route = SimpleNamespace(
+        path="semantic",
+        confidence=1.0,
+        reason="test",
+        semantic_query="test question",
+        structured_query=None,
+    )
+
+    def fake_route_query(query, artifact_paths=None):
+        captured["route_artifact_paths"] = artifact_paths
+        return fake_route
+
+    def fake_execute_route(route, semantic_k=3, original_query="", artifact_paths=None):
+        captured["execute_artifact_paths"] = artifact_paths
+        return SimpleNamespace(route=route)
+
+    monkeypatch.setattr(router, "route_query", fake_route_query)
+    monkeypatch.setattr(router, "execute_route", fake_execute_route)
+
+    router.route_and_execute("test question", artifact_paths=selected)
+
+    assert captured["route_artifact_paths"] is selected
+    assert captured["execute_artifact_paths"] is selected
+
+def test_custom_taxonomy_does_not_inherit_wc2022_stage_aliases():
+    taxonomy = router.StageTaxonomy.discover(
+        stages=["League Phase"],
+        knockout_stages=[],
+        group_stages=[],
+    )
+
+    query = router.parse_structured_query(
+        "How many goals did Messi score in the final?",
+        stage_taxonomy=taxonomy,
+    )
+
+    assert query is not None
+    assert not any(f.dimension == "stage" for f in query.filters)
+
+
+def test_knockout_filter_remains_semantic_for_custom_taxonomy():
+    taxonomy = router.StageTaxonomy.discover(
+        stages=["League Phase"],
+        knockout_stages=[],
+        group_stages=[],
+    )
+
+    query = router.parse_structured_query(
+        "How many goals did Messi score in the knockout?",
+        stage_taxonomy=taxonomy,
+    )
+
+    assert query is not None
+    assert any(
+        f.dimension == "is_knockout"
+        and f.operator == "eq"
+        and f.value is True
+        for f in query.filters
+    )

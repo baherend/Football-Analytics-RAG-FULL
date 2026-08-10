@@ -116,7 +116,11 @@ def test_chat_process_query_threads_configured_artifact_paths(monkeypatch):
         semantic_query="test question",
     )
 
-    monkeypatch.setattr(chat.router_mod, "route_query", lambda question: route)
+    def fake_route_query(question, artifact_paths=None):
+        captured["route_artifact_paths"] = artifact_paths
+        return route
+
+    monkeypatch.setattr(chat.router_mod, "route_query", fake_route_query)
 
     def fake_execute_route(route, semantic_k=5, original_query="", artifact_paths=None):
         captured["artifact_paths"] = artifact_paths
@@ -127,6 +131,7 @@ def test_chat_process_query_threads_configured_artifact_paths(monkeypatch):
     monkeypatch.setattr(chat.prompting_mod, "generate_answer", lambda *args, **kwargs: "answer", raising=False)
 
     assert chat.process_query("test question") == "answer"
+    assert captured["route_artifact_paths"] is selected
     assert captured["artifact_paths"] is selected
 
 

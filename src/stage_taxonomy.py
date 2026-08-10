@@ -60,6 +60,25 @@ class StageTaxonomy:
     def is_valid_stage(self, stage: str) -> bool:
         return stage in self.stages
 
+    def to_dict(self) -> dict:
+        """Serialize the complete taxonomy semantics to JSON-safe values."""
+        return {
+            "stages": sorted(self.stages),
+            "knockout_stages": sorted(self.knockout_stages),
+            "group_stages": sorted(self.group_stages),
+            "stage_order": list(self.stage_order),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "StageTaxonomy":
+        """Reconstruct a taxonomy from persisted metadata."""
+        return cls(
+            stages=frozenset(data.get("stages", ())),
+            knockout_stages=frozenset(data.get("knockout_stages", ())),
+            group_stages=frozenset(data.get("group_stages", ())),
+            stage_order=tuple(data.get("stage_order", ())),
+        )
+
     @classmethod
     def discover(
         cls,

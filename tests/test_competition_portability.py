@@ -346,3 +346,69 @@ def test_persist_raises_when_dataset_identity_ids_mismatch_requested_ids(tmp_pat
             result, output_dir=tmp_path, competition_id=2, season_id=27,
             dataset_identity=mismatched_identity,
         )
+
+def test_extract_all_discovers_conservative_taxonomy_for_non_wc_dataset(monkeypatch):
+    matches = [
+        _synthetic_match(1, stage_name="League Phase"),
+        _synthetic_match(2, stage_name="Final"),
+    ]
+
+    def fake_load_json(path):
+        path = Path(path)
+        if path.name == "27.json":
+            return matches
+        return []
+
+    monkeypatch.setattr(match_facts, "load_json", fake_load_json)
+
+    result = match_facts.extract_all(
+        data_root=Path("dataset"),
+        competition_id=2,
+        season_id=27,
+        verbose=False,
+    )
+
+    taxonomy = result["stage_taxonomy"]
+
+    assert taxonomy.stages == frozenset({"League Phase", "Final"})
+    assert taxonomy.knockout_stages == frozenset()
+    assert taxonomy.group_stages == frozenset()
+    assert taxonomy.stage_order == ()
+
+    by_stage = {fact.stage: fact for fact in result["match_facts"]}
+    assert by_stage["League Phase"].is_knockout is False
+    assert by_stage["Final"].is_knockout is False
+
+def test_persist_writes_stage_taxonomy_metadata(tmp_path):
+    from src.stage_taxonomy import StageTaxonomy
+
+    taxonomy = StageTaxonomy(
+        stages=frozenset({"League Phase", "Final"}),
+        knockout_stages=frozenset({"Final"}),
+        group_stages=frozenset({"League Phase"}),
+        stage_order=("League Phase", "Final"),
+    )
+    identity = DatasetIdentity(
+        competition_id=2,
+        competition_name="Test League",
+        season_id=27,
+        season_name="2025/2026",
+    )
+    result = {
+        "player_match_facts": [],
+        "match_facts": [],
+        "team_match_facts": [],
+        "stage_taxonomy": taxonomy,
+    }
+
+    output_path = match_facts.persist(
+        result,
+        output_dir=tmp_path,
+        competition_id=2,
+        season_id=27,
+        dataset_identity=identity,
+    )
+
+    data = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert data["metadata"]["stage_taxonomy"] == taxonomy.to_dict()
