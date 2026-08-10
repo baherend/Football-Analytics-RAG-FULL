@@ -25,6 +25,7 @@ import argparse
 import json
 import re
 from importlib import import_module
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -119,8 +120,10 @@ def build_chunks(documents: list[dict] | None = None) -> list[dict]:
     return all_chunks
 
 
-# Module-level chunks (legacy library-import behavior, unchanged)
-chunks = build_chunks()
+# Module-level chunks for legacy library-import behavior.
+# Avoid probing 01_documents.py when the legacy flat artifact does not exist;
+# namespaced CLI builds load their selected dataset explicitly inside main().
+chunks = build_chunks() if Path("output/documents.json").exists() else []
 
 
 def main() -> int:

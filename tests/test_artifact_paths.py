@@ -1357,3 +1357,19 @@ def test_execute_route_comparison_threads_persisted_stage_taxonomy_to_both_resol
     assert {name for name, _, _ in captured} == {"Alice", "Bob"}
     assert all(data_path == paths.match_facts for _, data_path, _ in captured)
     assert all(stage_taxonomy == taxonomy for _, _, stage_taxonomy in captured)
+
+def test_chunking_import_does_not_probe_legacy_documents_when_absent(monkeypatch, tmp_path, capsys):
+    import importlib
+    import sys
+
+    monkeypatch.chdir(tmp_path)
+
+    # Force a fresh import so any legacy import-time side effect is observable.
+    sys.modules.pop("03_chunking", None)
+    sys.modules.pop("01_documents", None)
+
+    chunking = importlib.import_module("03_chunking")
+    captured = capsys.readouterr()
+
+    assert chunking.chunks == []
+    assert "[01_documents] WARNING:" not in captured.out
