@@ -29,6 +29,7 @@ from src.conversation_memory import (
     format_conversation_context,
     resolve_pronoun_references,
 )
+from src.dataset_catalog import discover_datasets
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +377,18 @@ def handle_command(cmd: str):
 # ---------------------------------------------------------------------------
 
 
+def print_datasets() -> None:
+    """List runtime-selectable datasets discovered under output/."""
+    entries = discover_datasets(Path("output"))
+    if not entries:
+        print("No datasets discovered under output/.")
+        return
+    for entry in entries:
+        status = "ready" if entry.is_ready else "not ready"
+        print(f"  competition_id={entry.competition_id} season_id={entry.season_id}  "
+              f"{entry.label}  [{status}]")
+
+
 def main() -> int:
     """Main entry point."""
     parser = argparse.ArgumentParser(description="Interactive football analytics RAG chat")
@@ -386,8 +399,17 @@ def main() -> int:
         action="store_true",
         help="Use the namespaced artifact layout for the legacy default dataset",
     )
+    parser.add_argument(
+        "--list-datasets",
+        action="store_true",
+        help="List discovered runtime datasets (from output/) and exit",
+    )
     parser.add_argument("question", nargs="*")
     args = parser.parse_args()
+
+    if args.list_datasets:
+        print_datasets()
+        return 0
 
     if (args.competition_id is None) != (args.season_id is None):
         parser.error("--competition-id and --season-id must be provided together")

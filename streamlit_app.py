@@ -9,11 +9,12 @@ Usage:
 """
 
 from importlib import import_module
+from pathlib import Path
 
 import streamlit as st
 
-from src.artifacts import resolve_runtime_artifact_paths
 from src.conversation_memory import ConversationMemory
+from src.dataset_catalog import discover_datasets
 
 # ---------------------------------------------------------------------------
 # Load RAG module
@@ -122,32 +123,30 @@ with st.sidebar:
     st.title("⚽ Football Analytics")
     st.markdown("---")
 
+    st.subheader("Dataset")
+
+    dataset_entries = discover_datasets(Path("output"))
+    ready_entries = [entry for entry in dataset_entries if entry.is_ready]
+
+    if not ready_entries:
+        st.error(
+            "No runtime-ready datasets were discovered under output/. Run "
+            "the extraction / rendering / indexing pipeline for at least "
+            "one competition and season before starting the assistant."
+        )
+        st.stop()
+
+    selected_entry = st.selectbox(
+        "Competition / Season",
+        ready_entries,
+        format_func=lambda entry: entry.label,
+    )
+
+    artifact_paths = selected_entry.artifact_paths
+    dataset_key = artifact_paths
+
     st.subheader("Settings")
 
-    competition_id = st.number_input(
-        "Competition ID",
-        min_value=1,
-        value=43,
-        step=1,
-    )
-    season_id = st.number_input(
-        "Season ID",
-        min_value=1,
-        value=106,
-        step=1,
-    )
-    namespaced = st.checkbox(
-        "Use namespaced artifacts",
-        value=False,
-        help="For the legacy default dataset, opt in to output/competitions/<competition_id>/<season_id>/ instead of flat output/.",
-    )
-
-    artifact_paths = resolve_runtime_artifact_paths(
-        int(competition_id),
-        int(season_id),
-        legacy_default=not namespaced,
-    )
-    dataset_key = (int(competition_id), int(season_id), bool(namespaced))
     model = st.selectbox(
         "LLM Model",
         ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it", "mixtral-8x7b-32768"],

@@ -183,10 +183,27 @@ def _streamlit_source() -> str:
     return Path("streamlit_app.py").read_text(encoding="utf-8")
 
 
-def test_streamlit_uses_central_runtime_dataset_resolver():
-    source = _streamlit_source()
+def test_streamlit_selected_catalog_entry_supplies_runtime_artifact_paths():
+    """The catalog-selected entry must directly supply the runtime contract."""
+    import ast
 
-    assert "resolve_runtime_artifact_paths" in source
+    tree = ast.parse(_streamlit_source())
+    assignments = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "artifact_paths"
+            for target in node.targets
+        )
+    ]
+
+    assert len(assignments) == 1
+    value = assignments[0].value
+    assert isinstance(value, ast.Attribute)
+    assert value.attr == "artifact_paths"
+    assert isinstance(value.value, ast.Name)
+    assert value.value.id == "selected_entry"
 
 
 def test_streamlit_passes_selected_artifact_paths_to_answer_question():
