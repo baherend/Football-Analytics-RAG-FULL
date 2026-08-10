@@ -205,6 +205,7 @@ def process_query(question: str) -> str:
                 llm_answer=answer,
                 structured_explanation=sr.explanation,
                 structured_value=sr.aggregated_value,
+                structured_metric=getattr(sr.query, "metric", None),
             )
             if not validation.is_valid:
                 # Contradiction detected — use corrected answer

@@ -1,5 +1,5 @@
 """
-Competition Portability — Batch 7: Runtime Dataset Selection / Entry-Point Portability.
+Competition Portability â€” Batch 7: Runtime Dataset Selection / Entry-Point Portability.
 
 These tests define the runtime-boundary contract only. They deliberately do
 not retest retrieval internals already covered by Batch 5/6.
@@ -278,3 +278,96 @@ def test_chat_prompting_module_exposes_required_runtime_api():
 
     assert "Authoritative" in prompt
     assert "7 goals" in prompt
+
+def test_prompting_validation_detects_numeric_contradiction():
+    prompting = import_module("07_prompting")
+
+    assert hasattr(prompting, "validate_answer")
+
+    result = prompting.validate_answer(
+        llm_answer="Jamie Vardy scored 20 goals.",
+        structured_explanation="Jamie Vardy's total goals is 24.",
+        structured_value=24,
+    )
+
+    assert result.is_valid is False
+    assert result.contradictions
+    assert "24" in result.corrected_answer
+
+def test_chat_validation_threads_structured_metric(monkeypatch):
+    chat = import_module("chat")
+    selected = ArtifactPaths(2, 27)
+
+    chat.state.artifact_paths = selected
+    chat.state.mode = "hybrid"
+    chat.state.history = []
+    from src.conversation_memory import ConversationMemory
+    chat.state.memory = ConversationMemory()
+
+    structured_query = SimpleNamespace(metric="goals")
+    route = SimpleNamespace(
+        path="structured",
+        confidence=1.0,
+        reason="test",
+        structured_query=structured_query,
+        semantic_query=None,
+    )
+    structured_result = SimpleNamespace(
+        status="resolved",
+        explanation="Jamie Vardy's total goals is 24.",
+        aggregated_value=24,
+        query=structured_query,
+    )
+
+    monkeypatch.setattr(
+        chat.router_mod,
+        "route_query",
+        lambda query, artifact_paths=None: route,
+    )
+    monkeypatch.setattr(
+        chat.router_mod,
+        "execute_route",
+        lambda route, semantic_k=5, original_query="", artifact_paths=None: SimpleNamespace(
+            structured_result=structured_result,
+            semantic_chunks=[],
+        ),
+    )
+    monkeypatch.setattr(
+        chat.prompting_mod,
+        "build_prompt",
+        lambda *args, **kwargs: "prompt",
+    )
+    monkeypatch.setattr(
+        chat.prompting_mod,
+        "generate_answer",
+        lambda *args, **kwargs: "Jamie Vardy scored 24 goals with 5.7 xG.",
+    )
+
+    captured = {}
+
+    def fake_validate_answer(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            is_valid=True,
+            contradictions=[],
+            corrected_answer=None,
+        )
+
+    monkeypatch.setattr(chat.prompting_mod, "validate_answer", fake_validate_answer)
+
+    chat.process_query("How many goals did Jamie Vardy score?")
+
+    assert captured["structured_metric"] == "goals"
+
+def test_prompting_validation_ignores_unrelated_numeric_metric():
+    prompting = import_module("07_prompting")
+
+    result = prompting.validate_answer(
+        llm_answer="Jamie Vardy scored 24 goals with 5.7 xG.",
+        structured_explanation="Jamie Vardy's total goals is 24.",
+        structured_value=24,
+        structured_metric="goals",
+    )
+
+    assert result.is_valid is True
+    assert result.contradictions == []
