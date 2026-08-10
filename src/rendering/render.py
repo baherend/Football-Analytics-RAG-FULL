@@ -558,7 +558,8 @@ def render_level4(
         f"{player} of {team} appeared in {matches_played} "
         f"match{'es' if matches_played != 1 else ''} at the {dataset_identity.display_name}, "
         f"playing {_num(total_minutes, 1)} minutes in total.",
-        f"Across the tournament he scored {total_goals} goal"
+        f"Across the {'tournament' if dataset_identity == WC2022_DATASET_IDENTITY else 'competition'} "
+        f"he scored {total_goals} goal"
         f"{'s' if total_goals != 1 else ''} and provided {total_assists} assist"
         f"{'s' if total_assists != 1 else ''} from {_num(total_xg)} expected goals, "
         f"a goal contribution rate of {_num(contribution)} per match.",

@@ -158,6 +158,8 @@ def test_render_level4_custom_identity():
     assert doc.metadata["season_name"] == "2025/2026"
     assert "Test League 2025/2026" in doc.text
     assert "FIFA World Cup 2022" not in doc.text
+    assert "Across the competition" in doc.text
+    assert "Across the tournament" not in doc.text
 
 
 # ---------------------------------------------------------------------------
@@ -448,3 +450,14 @@ def test_render_all_raises_when_ids_only_metadata_conflicts_with_explicit_ids():
 
     with pytest.raises(ValueError):
         render_all(facts, dataset_identity=mismatched_identity)
+
+def test_render_level4_default_wc2022_keeps_tournament_wording():
+    player_facts = [_fake_player_tournament_facts()]
+    match_index = {1: {"match_date": "2026-01-01"}}
+
+    doc = render_level4(1, player_facts, match_index)
+
+    assert doc.metadata["competition_id"] == 43
+    assert doc.metadata["season_id"] == 106
+    assert "Across the tournament" in doc.text
+    assert "Across the competition" not in doc.text
