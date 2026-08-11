@@ -305,3 +305,89 @@ def test_falls_back_to_original_ranking_when_no_lexical_evidence():
     )
 
     assert selected == [chunks[0]]
+
+
+def test_backfills_ranked_chunks_after_query_coverage_is_exhausted():
+    chunks = [
+        {
+            "chunk_id": "DOC-1",
+            "text": "France used passing patterns and formations throughout the tournament.",
+            "metadata": {"document_id": "DOC-1", "level": "team", "team_name": "France"},
+            "score": 0.9,
+            "rank": 1,
+            "source": "hybrid",
+        },
+        {
+            "chunk_id": "DOC-2",
+            "text": "France also controlled possession in several matches.",
+            "metadata": {"document_id": "DOC-2", "level": "team", "team_name": "France"},
+            "score": 0.8,
+            "rank": 2,
+            "source": "hybrid",
+        },
+        {
+            "chunk_id": "DOC-3",
+            "text": "France reached the final after seven matches.",
+            "metadata": {"document_id": "DOC-3", "level": "team", "team_name": "France"},
+            "score": 0.7,
+            "rank": 3,
+            "source": "hybrid",
+        },
+    ]
+
+    selected = select_relevant_chunks(
+        query="What were France's passing patterns and formations?",
+        chunks=chunks,
+        max_chunks=3,
+    )
+
+    assert selected == chunks
+
+
+def test_keeps_candidate_with_missing_entity_metadata_when_query_evidence_matches():
+    """Missing entity metadata must not be treated as a conflicting entity."""
+    chunks = [
+        {
+            "chunk_id": "L2-correct",
+            "text": "Substitution: Argentina made several tactical changes in the semi-final.",
+            "metadata": {
+                "document_id": "L2-match-correct",
+                "level": "2",
+            },
+            "score": 0.9,
+            "rank": 1,
+            "source": "dense",
+        },
+        {
+            "chunk_id": "ARG-player",
+            "text": "Argentina player performance in the semi-final.",
+            "metadata": {
+                "document_id": "L3-arg",
+                "level": "3",
+                "team_name": "Argentina",
+            },
+            "score": 0.8,
+            "rank": 2,
+            "source": "bm25",
+        },
+        {
+            "chunk_id": "CRO-player",
+            "text": "Croatia player performance in the semi-final.",
+            "metadata": {
+                "document_id": "L3-cro",
+                "level": "3",
+                "team_name": "Croatia",
+            },
+            "score": 0.7,
+            "rank": 3,
+            "source": "bm25",
+        },
+    ]
+
+    selected = select_relevant_chunks(
+        query="What substitutions were made in Argentina vs Croatia semi-final?",
+        chunks=chunks,
+        max_chunks=2,
+    )
+
+    assert chunks[0] in selected

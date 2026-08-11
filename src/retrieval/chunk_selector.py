@@ -96,6 +96,7 @@ def select_relevant_chunks(
 
         if (
             mentioned_entity_terms
+            and chunk_entity_terms
             and not (chunk_entity_terms & mentioned_entity_terms)
         ):
             continue
@@ -130,5 +131,27 @@ def select_relevant_chunks(
 
         selected.append(chunk)
         covered.update(new_coverage)
+
+    # Coverage selection can exhaust the available query facets before
+    # reaching max_chunks. Backfill from the original ranking so Hybrid
+    # preserves useful retrieval depth instead of returning an underfilled
+    # result set. Keep entity grounding when the query names an entity.
+    selected_objects = {id(chunk) for chunk in selected}
+    for position, chunk in enumerate(chunks):
+        if len(selected) >= max_chunks:
+            break
+        if id(chunk) in selected_objects:
+            continue
+
+        chunk_entity_terms = entity_terms_by_chunk[position]
+        if (
+            mentioned_entity_terms
+            and chunk_entity_terms
+            and not (chunk_entity_terms & mentioned_entity_terms)
+        ):
+            continue
+
+        selected.append(chunk)
+        selected_objects.add(id(chunk))
 
     return selected
