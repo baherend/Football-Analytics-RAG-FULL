@@ -173,6 +173,76 @@ This system uses [StatsBomb Open Data](https://github.com/statsbomb/open-data) f
 
 **Note:** The raw data is not included in this repository. Download it separately and extract to `open-data-master/data/`.
 
+
+<!-- PROJECT_STATUS_START -->
+## Current Project Status - August 2026
+
+The project is being upgraded from a FIFA World Cup 2022-specific RAG system into a competition-portable football analytics platform.
+
+### Competition Portability
+
+The pipeline now supports runtime dataset selection using `competition_id` and `season_id`, with namespaced artifacts and Chroma collections.
+
+Validated datasets:
+
+- FIFA World Cup 2022 - competition `43`, season `106` (legacy baseline)
+- English Premier League 2015/16 - competition `2`, season `27` (portability validation)
+
+The EPL dataset was successfully processed through extraction, validation, rendering, chunking, indexing, retrieval, and structured querying without competition-specific code changes.
+
+### Structured Correctness
+
+Completed fixes include:
+
+- Period filter normalization across integer, string, and alias inputs.
+- Correct aggregation of derived ratios from combined numerator/denominator components instead of averaging per-match percentages.
+- Dataset integrity validation for competition-specific artifacts.
+
+### Retrieval Quality
+
+The retrieval layer uses BM25, dense retrieval, Hybrid Reciprocal Rank Fusion, answer-aware safeguards, sibling expansion, and query-aware chunk selection.
+
+The current WC2022 semantic ground-truth benchmark contains 24 evaluation cases.
+
+Final Hybrid retrieval results at `K=5`:
+
+| Metric | Hybrid Before | Hybrid Final |
+| --- | ---: | ---: |
+| Hit@5 | 58.3% | **91.7%** |
+| Recall@5 | 47.0% | **83.8%** |
+| All Required@5 | 41.7% | **79.2%** |
+| NDCG@5 | 48.7% | **75.4%** |
+
+The final Hybrid configuration also outperformed the Dense baseline at `K=5`.
+
+Key selector fixes:
+
+- Backfill ranked candidates when lexical/query coverage is exhausted before `max_chunks`.
+- Treat missing entity metadata as unknown rather than as an entity conflict.
+
+Relevant retrieval regression suite: **100 tests passed**.
+
+> Retrieval quality metrics above are benchmarked on the WC2022 semantic ground truth. EPL 2015/16 has been validated for portability and runtime correctness but does not yet have an equivalent semantic ground-truth benchmark.
+
+### Development Roadmap
+
+Completed:
+
+- Competition portability
+- Dataset integrity validation
+- Structured query correctness
+- Chunking / Retrieval Quality
+
+Next:
+
+- Faithfulness and grounded generation
+- Comparison Engine
+- User interface refinement
+- Final documentation
+
+Current development branch: `competition-portability`.
+<!-- PROJECT_STATUS_END -->
+
 ## License
 
 This project is for educational purposes. StatsBomb data is subject to their open data license.
