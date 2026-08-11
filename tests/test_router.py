@@ -186,6 +186,34 @@ def test_comparison_routing_hybrid():
         assert route.path == "hybrid", f"route_query({question!r}).path = {route.path}, expected hybrid"
 
 
+def test_comparison_entity_extraction_who_scored_more_phrasing():
+    """
+    Comparison Engine audit (Step 1): _detect_comparison() only recognizes
+    "compare X and Y", "X vs Y", "who was/is better X or Y", and
+    "difference between X and Y" phrasing (see
+    test_comparison_entity_extraction above). A natural comparison question
+    phrased as "who <verb> more <metric>, A or B?" -- e.g. the question a
+    user would actually ask to compare two players' goal totals -- is not
+    recognized at all, so both entities are silently lost before any
+    structured resolution is attempted. This is the same function
+    classify_query() and execute_route() both rely on for comparison
+    intent, so this single gap blocks comparison end-to-end for this
+    phrasing regardless of downstream structured/aggregation behavior.
+
+    "Harry Kane"/"Jamie Vardy" are used as realistic fixture names from the
+    EPL 2015/16 portability dataset (competition_id=2, season_id=27) --
+    this test exercises only the generic entity-extraction contract, not
+    any player-specific production logic.
+    """
+    question = "Who scored more goals, Harry Kane or Jamie Vardy?"
+    result = router._detect_comparison(question)
+    assert result == ["Harry Kane", "Jamie Vardy"], (
+        f"_detect_comparison({question!r}) = {result}, expected both full "
+        "player names to be preserved so a structured comparison can be "
+        "attempted for either entity."
+    )
+
+
 
 # ---------------------------------------------------------------------------
 # Tests: Retrieval post-processing regressions
@@ -356,6 +384,7 @@ def run_all_tests():
         test_comparison_entity_extraction,
         test_comparison_classification_hybrid,
         test_comparison_routing_hybrid,
+        test_comparison_entity_extraction_who_scored_more_phrasing,
     ]
 
     passed, failed = 0, 0

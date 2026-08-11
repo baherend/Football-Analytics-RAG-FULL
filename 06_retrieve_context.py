@@ -1152,6 +1152,10 @@ COMPARISON_PATTERNS = [
     r"(\w+)\s+versus\s+(\w+)",
     r"who\s+(?:is|was)\s+better[,.]?\s*(.+?)\s+or\s+(.+?)(?:\s*$|\s*\?)",
     r"difference\s+between\s+(.+?)\s+and\s+(.+?)(?:\s*$|\s*\?)",
+    # "Who <verb> more <metric>, A or B?" -- e.g. "Who scored more goals,
+    # Harry Kane or Jamie Vardy?". The metric clause is not captured; only
+    # entity extraction is handled here.
+    r"who\s+\w+\s+more\s+[\w\s]+?,\s*(.+?)\s+or\s+(.+?)(?:\s*$|\s*\?)",
 ]
 
 
