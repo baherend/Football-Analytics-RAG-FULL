@@ -81,8 +81,9 @@ def main() -> int:
          "Phase 3: Preprocess text"),
         ([sys.executable, "03_chunking.py", *identity_args, "--quiet"],
          "Phase 3: Chunk documents"),
-        ([sys.executable, "04_vector_representation.py", *identity_args, "--quiet"],
-         "Phase 4: Build all vector representations"),
+    ([sys.executable, "04_vector_representation.py", *identity_args,
+      *(["--skip-embeddings"] if args.quick else []), "--quiet"],
+     "Phase 4: Build vector representations"),
     ]
 
     if not args.quick:

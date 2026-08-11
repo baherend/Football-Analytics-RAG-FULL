@@ -643,7 +643,7 @@ def test_rebuild_namespaced_flag_reaches_every_artifact_producing_step(monkeypat
         assert "--namespaced" in cmd
 
 
-def test_rebuild_quick_mode_skips_chroma_step(monkeypatch, tmp_path):
+def test_rebuild_quick_mode_skips_embeddings_and_chroma(monkeypatch, tmp_path):
     import rebuild
 
     (tmp_path / "open-data-master" / "data").mkdir(parents=True)
@@ -654,6 +654,14 @@ def test_rebuild_quick_mode_skips_chroma_step(monkeypatch, tmp_path):
     monkeypatch.setattr("sys.argv", ["rebuild.py", "--quick"])
 
     assert rebuild.main() == 0
+
+    vector_commands = [
+        c for c in commands_run
+        if "04_vector_representation.py" in c
+    ]
+    assert len(vector_commands) == 1
+    assert "--skip-embeddings" in vector_commands[0]
+
     assert not any("05_create_chroma_store.py" in c for c in commands_run)
 
 

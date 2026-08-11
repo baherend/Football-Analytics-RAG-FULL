@@ -170,6 +170,11 @@ def main() -> int:
     parser.add_argument("--namespaced", action="store_true",
                         help="Use output/competitions/<id>/<id>/ even for the WC2022 default")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument(
+        "--skip-embeddings",
+        action="store_true",
+        help="Build lexical indices only; skip sentence embeddings",
+    )
     args = parser.parse_args()
 
     output_dir = resolve_output_dir(args.competition_id, args.season_id,
@@ -194,16 +199,19 @@ def main() -> int:
         pickle.dump(bm25_index, f)
 
     if not args.quiet:
-        print(f"Generating embeddings ({MODEL_NAME})...")
-    embeddings = _build_embeddings(chunks_data)
-
-    embeddings_dir = output_dir / "embeddings"
-    embeddings_dir.mkdir(parents=True, exist_ok=True)
-    np.save(embeddings_dir / "embeddings.npy", embeddings)
-
-    if not args.quiet:
         print(f"Wrote {indices_dir / 'bm25.pkl'}")
-        print(f"Wrote {embeddings_dir / 'embeddings.npy'}")
+
+    if not args.skip_embeddings:
+        if not args.quiet:
+            print(f"Generating embeddings ({MODEL_NAME})...")
+        embeddings = _build_embeddings(chunks_data)
+
+        embeddings_dir = output_dir / "embeddings"
+        embeddings_dir.mkdir(parents=True, exist_ok=True)
+        np.save(embeddings_dir / "embeddings.npy", embeddings)
+
+        if not args.quiet:
+            print(f"Wrote {embeddings_dir / 'embeddings.npy'}")
 
     return 0
 
