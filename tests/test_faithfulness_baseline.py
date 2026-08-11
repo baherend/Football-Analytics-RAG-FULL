@@ -23,6 +23,8 @@ from src.artifacts import ArtifactPaths
 from src.conversation_memory import ConversationMemory
 from src.retrieval.answerability import AnswerabilityAssessment
 
+prompting = import_module("07_prompting")
+
 
 def test_chat_process_query_stops_before_generation_when_context_is_unanswerable(monkeypatch):
     chat = import_module("chat")
@@ -238,3 +240,92 @@ def test_answer_question_unanswerable_refuses_even_without_api_key(monkeypatch):
 
     assert answer == prompting.INSUFFICIENT_CONTEXT_MESSAGE
     assert not generation_calls
+
+
+def test_format_context_for_prompt_distinguishes_chunks_with_identical_display_metadata():
+    """
+    Evidence-attribution gap: format_context_for_prompt() (chat.py's semantic
+    evidence formatter, used for the "[Source N]" blocks the SYSTEM_PROMPT
+    tells the LLM to cite) currently keys each header only on level/player/
+    team/match_id. Two different retrieved chunks that share all four --
+    e.g. two distinct excerpts about the same player from the same match,
+    a realistic shape once sibling-expansion/comparison-boost add related
+    chunks -- render identical header text except for the "[Source N]"
+    position count, so a citation can't be traced back to which underlying
+    chunk actually supported it. The stable retrieval identity (chunk_id)
+    is available on every chunk but is never included.
+
+    This also pins ordering: [Source 1] must correspond to the first chunk
+    and [Source 2] to the second, matching the order answer_question()
+    returns as `sources`.
+    """
+    chunk_a = {
+        "chunk_id": "DOC-1-chunk-0",
+        "text": "Messi opened the scoring with a low finish from the edge of the box.",
+        "metadata": {
+            "document_id": "DOC-1",
+            "level": "4",
+            "player_name": "Lionel Messi",
+            "team_name": "Argentina",
+            "match_id": "8658",
+        },
+    }
+    chunk_b = {
+        "chunk_id": "DOC-2-chunk-0",
+        "text": "Messi later converted a penalty to double Argentina's lead.",
+        "metadata": {
+            "document_id": "DOC-2",
+            "level": "4",
+            "player_name": "Lionel Messi",
+            "team_name": "Argentina",
+            "match_id": "8658",
+        },
+    }
+
+    formatted = prompting.format_context_for_prompt([chunk_a, chunk_b])
+    lines = formatted.splitlines()
+
+    source_1_header = next(line for line in lines if line.startswith("[Source 1"))
+    source_2_header = next(line for line in lines if line.startswith("[Source 2"))
+
+    assert chunk_a["chunk_id"] in source_1_header
+    assert chunk_b["chunk_id"] in source_2_header
+    assert chunk_a["chunk_id"] not in source_2_header
+    assert chunk_b["chunk_id"] not in source_1_header
+
+
+def test_retrieval_build_context_uses_source_labels_with_chunk_identity():
+    retrieval = import_module("06_retrieve_context")
+
+    chunks = [
+        {
+            "chunk_id": "L2-match-3869685-chunk-0",
+            "text": "First evidence block.",
+            "metadata": {
+                "document_id": "L2-match-3869685",
+                "level": "2",
+                "match_id": 3869685,
+                "team_name": "Argentina",
+            },
+            "score": 0.9,
+        },
+        {
+            "chunk_id": "L2-match-3869685-chunk-1",
+            "text": "Second evidence block.",
+            "metadata": {
+                "document_id": "L2-match-3869685",
+                "level": "2",
+                "match_id": 3869685,
+                "team_name": "Argentina",
+            },
+            "score": 0.8,
+        },
+    ]
+
+    context = retrieval.build_context(chunks)
+
+    assert "[Source 1:" in context
+    assert "[Source 2:" in context
+    assert "L2-match-3869685-chunk-0" in context
+    assert "L2-match-3869685-chunk-1" in context
+    assert "[Document 1" not in context

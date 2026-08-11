@@ -154,6 +154,8 @@ def format_context_for_prompt(chunks: list[dict], max_length: int = 3000) -> str
         level = meta.get("level", "unknown")
 
         source = f"[Source {i + 1}: Level {level}"
+        if chunk.get("chunk_id"):
+            source += f", chunk_id={chunk['chunk_id']}"
         if meta.get("player_name"):
             source += f", {meta['player_name']}"
         if meta.get("team_name"):

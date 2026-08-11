@@ -976,8 +976,11 @@ def build_context(chunks: list[dict], max_length: int = 3000) -> str:
         meta = chunk.get("metadata", {})
         level = meta.get("level", "unknown")
 
-        # Add header with metadata
-        header = f"[Document {i+1} - Level {level}"
+        # Add a stable source label that matches the generation prompt's
+        # citation contract and preserves exact chunk-level traceability.
+        header = f"[Source {i+1}: Level {level}"
+        if chunk.get("chunk_id"):
+            header += f", chunk_id={chunk['chunk_id']}"
         if meta.get("player_name"):
             header += f", Player: {meta['player_name']}"
         if meta.get("team_name"):
