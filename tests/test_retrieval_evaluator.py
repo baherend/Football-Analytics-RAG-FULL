@@ -1900,28 +1900,28 @@ def test_namespaced_bm25_only_evaluation_receives_original_artifact_paths(tmp_pa
     mock_chroma_copy.assert_not_called()
 
 
-def test_legacy_run_retrieval_baseline_passes_no_artifact_paths_to_chroma_methods():
-    """Legacy (artifact_paths=None) Dense/Hybrid evaluation must not pass an
-    artifact_paths kwarg at all -- legacy retrieval functions/fakes with no
-    artifact_paths parameter must keep working, relying purely on
-    temporary_chroma_copy's existing module-level CHROMA_DIR patch."""
+def test_legacy_chroma_evaluation_receives_temporary_flat_layout_view():
+    """Legacy Dense evaluation must explicitly use the temporary Chroma copy.
+
+    The view must keep legacy flat-layout chunks/BM25 paths while overriding
+    only Chroma, avoiding reliance on module-level CHROMA_DIR patching.
+    """
     from contextlib import contextmanager as _contextmanager
+    from pathlib import Path
 
     from tests.retrieval_evaluator import run_retrieval_baseline
 
     fake_metadata, fake_cases, fake_doc_levels = _fake_gt_fixture()
-
     captured = []
 
-    def legacy_fake_dense(query, k=20, level_filter=None):
-        # No artifact_paths parameter at all -- must not be called with one.
-        captured.append("called")
+    def fake_dense(query, k=20, level_filter=None, artifact_paths=None):
+        captured.append(artifact_paths)
         return []
 
     mock_module = MagicMock()
-    mock_module.dense_search = legacy_fake_dense
-    mock_module._bm25_cache = None
-    mock_module._chunks_cache = None
+    mock_module.dense_search = fake_dense
+    mock_module._bm25_cache = {}
+    mock_module._chunks_cache = {}
 
     @_contextmanager
     def fake_chroma_copy(original_dir, mod):
@@ -1943,7 +1943,13 @@ def test_legacy_run_retrieval_baseline_passes_no_artifact_paths_to_chroma_method
             candidate_chunk_depth=100,
         )
 
-    assert captured == ["called"]
+    assert len(captured) == 1
+    view = captured[0]
+    assert view is not None
+    assert Path(view.chroma_dir) == Path("/tmp/fake-legacy-chroma")
+    assert Path(view.chunks) == Path("output/chunks.json")
+    assert Path(view.bm25_index) == Path("output/indices/bm25.pkl")
+    assert view.chroma_collection_name == "wc2022_documents"
 
 
 def test_run_retrieval_baseline_integrity_checks_remain_active_for_namespaced_dataset(tmp_path):
@@ -2228,3 +2234,19 @@ def test_cli_refuses_namespaced_dataset_without_ground_truth_benchmark(capsys):
     assert exit_code == 1
     captured = capsys.readouterr()
     assert "Ground Truth" in captured.err
+
+
+def test_reset_retrieval_caches_preserves_dict_cache_contract():
+    """Evaluator cache reset must leave retrieval path-keyed caches usable."""
+    import types
+    from tests.retrieval_evaluator import reset_retrieval_caches
+
+    fake = types.SimpleNamespace(
+        _bm25_cache={"x": object()},
+        _chunks_cache={"y": []},
+    )
+
+    reset_retrieval_caches(fake)
+
+    assert fake._bm25_cache == {}
+    assert fake._chunks_cache == {}

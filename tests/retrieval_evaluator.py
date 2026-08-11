@@ -881,9 +881,9 @@ def load_retrieval_module(project_root: str = ".") -> Any:
 def reset_retrieval_caches(retrieval_module: Any) -> None:
     """Reset retrieval module caches."""
     if hasattr(retrieval_module, "_bm25_cache"):
-        retrieval_module._bm25_cache = None
+        retrieval_module._bm25_cache = {}
     if hasattr(retrieval_module, "_chunks_cache"):
-        retrieval_module._chunks_cache = None
+        retrieval_module._chunks_cache = {}
     try:
         from src.cache import clear_all_caches
 
@@ -949,6 +949,32 @@ def temporary_chroma_copy(
             retrieval_module.CHROMA_DIR = original_chroma_attr
         reset_retrieval_caches(retrieval_module)
 
+        # Chroma keeps shared PersistentClient systems alive beyond the local
+        # dense_search call. Release them before deleting the temporary DB,
+        # otherwise Windows can keep segment files open and rmtree fails.
+        try:
+            from chromadb.api.client import SharedSystemClient
+
+            # clear_system_cache() only drops Chroma's shared references; it
+            # does not stop the underlying systems. Stop them first so Windows
+            # releases segment file handles before the temporary DB is deleted.
+            tmp_resolved = Path(tmp_chroma).resolve()
+            for identifier, system in list(
+                SharedSystemClient._identifier_to_system.items()
+            ):
+                try:
+                    matches_tmp = Path(identifier).resolve() == tmp_resolved
+                except (OSError, TypeError, ValueError):
+                    matches_tmp = False
+
+                if matches_tmp:
+                    system.stop()
+                    SharedSystemClient._identifier_to_system.pop(identifier, None)
+                    SharedSystemClient._identifier_to_refcount.pop(identifier, None)
+        except Exception:
+            pass
+        gc.collect()
+
         # Delete temp
         shutil.rmtree(tmp_dir, ignore_errors=True)
         if os.path.exists(tmp_dir):
@@ -968,6 +994,62 @@ def temporary_chroma_copy(
                 raise RetrievalEvaluationError(
                     "Original Chroma database was modified during evaluation"
                 )
+
+
+@dataclass(frozen=True)
+class LegacyTemporaryChromaArtifactPaths:
+    """Evaluator-only view for the legacy flat WC2022 artifact layout."""
+
+    project_root: Path
+    chroma_dir_override: Path
+
+    @property
+    def output_root(self) -> Path:
+        return self.project_root / "output"
+
+    @property
+    def root(self) -> Path:
+        return self.output_root
+
+    @property
+    def match_facts(self) -> Path:
+        return self.output_root / "match_facts.json"
+
+    @property
+    def documents(self) -> Path:
+        return self.output_root / "documents.json"
+
+    @property
+    def processed_documents(self) -> Path:
+        return self.output_root / "processed_documents.json"
+
+    @property
+    def chunks(self) -> Path:
+        return self.output_root / "chunks.json"
+
+    @property
+    def indices_dir(self) -> Path:
+        return self.output_root / "indices"
+
+    @property
+    def bm25_index(self) -> Path:
+        return self.indices_dir / "bm25.pkl"
+
+    @property
+    def embeddings_dir(self) -> Path:
+        return self.output_root / "embeddings"
+
+    @property
+    def embeddings_file(self) -> Path:
+        return self.embeddings_dir / "embeddings.npy"
+
+    @property
+    def chroma_dir(self) -> Path:
+        return self.chroma_dir_override
+
+    @property
+    def chroma_collection_name(self) -> str:
+        return "wc2022_documents"
 
 
 @dataclass(frozen=True)
@@ -1290,10 +1372,15 @@ def run_retrieval_baseline(
                         chroma_dir_override=Path(tmp_chroma),
                     )
                 else:
-                    # Legacy: no artifact_paths object at all -- Dense/Hybrid
-                    # rely on the module-level CHROMA_DIR patch that
-                    # temporary_chroma_copy already applies.
-                    chroma_methods_artifact_paths = None
+                    # Legacy flat layout still needs an explicit artifact-path
+                    # view so Dense/Hybrid use the temporary Chroma copy.
+                    # Patching module-level CHROMA_DIR alone is insufficient
+                    # because dense_search captures CHROMA_DIR in its default
+                    # argument when the function is defined.
+                    chroma_methods_artifact_paths = LegacyTemporaryChromaArtifactPaths(
+                        project_root=Path(project_root),
+                        chroma_dir_override=Path(tmp_chroma),
+                    )
                 all_method_results.update(
                     _run_methods(chroma_methods, chroma_methods_artifact_paths)
                 )
