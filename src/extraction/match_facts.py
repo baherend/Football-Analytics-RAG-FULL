@@ -1105,6 +1105,111 @@ def _resolve_dataset_identity(
     )
 
 
+
+def validate_dataset_integrity(
+    match_facts: list,
+    player_match_facts: list,
+    team_match_facts: list,
+) -> list[str]:
+    """Validate competition-neutral relationships across extracted fact records."""
+    from collections import Counter
+
+    def field_of(record, field):
+        if isinstance(record, dict):
+            return record.get(field)
+        return getattr(record, field, None)
+
+    errors: list[str] = []
+
+    match_ids = [field_of(record, "match_id") for record in match_facts]
+
+    missing_match_ids = sum(match_id is None for match_id in match_ids)
+    if missing_match_ids:
+        errors.append(
+            f"Missing match_id in {missing_match_ids} match_facts record(s)"
+        )
+
+    valid_match_ids = {match_id for match_id in match_ids if match_id is not None}
+    match_id_counts = Counter(
+        match_id for match_id in match_ids if match_id is not None
+    )
+
+    duplicate_ids = sorted(
+        match_id
+        for match_id, count in match_id_counts.items()
+        if count > 1
+    )
+    if duplicate_ids:
+        errors.append(f"Duplicate match_id values: {duplicate_ids}")
+
+    for label, records in (
+        ("player_match_facts", player_match_facts),
+        ("team_match_facts", team_match_facts),
+    ):
+        record_match_ids = [field_of(record, "match_id") for record in records]
+
+        missing_ids = sum(match_id is None for match_id in record_match_ids)
+        if missing_ids:
+            errors.append(
+                f"Missing match_id in {missing_ids} {label} record(s)"
+            )
+
+        unknown_ids = sorted({
+            match_id
+            for match_id in record_match_ids
+            if match_id is not None and match_id not in valid_match_ids
+        })
+        if unknown_ids:
+            errors.append(
+                f"{label} reference unknown match_id values: {unknown_ids}"
+            )
+
+    missing_player_ids = sum(
+        field_of(record, "player_id") is None
+        for record in player_match_facts
+    )
+    if missing_player_ids:
+        errors.append(
+            f"Missing player_id in {missing_player_ids} player_match_facts record(s)"
+        )
+
+    negative_minutes = sum(
+        (field_of(record, "minutes") or 0) < 0
+        for record in player_match_facts
+    )
+    if negative_minutes:
+        errors.append(
+            f"Negative minutes in {negative_minutes} player_match_facts record(s)"
+        )
+
+    negative_goals = sum(
+        (field_of(record, "goals") or 0) < 0
+        for record in player_match_facts
+    )
+    if negative_goals:
+        errors.append(
+            f"Negative goals in {negative_goals} player_match_facts record(s)"
+        )
+
+    team_counts = Counter(
+        field_of(record, "match_id")
+        for record in team_match_facts
+        if field_of(record, "match_id") is not None
+    )
+    bad_team_counts = {
+        match_id: team_counts.get(match_id, 0)
+        for match_id in sorted(valid_match_ids)
+        if team_counts.get(match_id, 0) != 2
+    }
+    if bad_team_counts:
+        errors.append(
+            "Each match must have exactly 2 team_match_facts; "
+            f"violations: {bad_team_counts}"
+        )
+
+    return errors
+
+
 def extract_all(
     data_root: Path = DATA_ROOT,
     verbose: bool = True,
@@ -1184,6 +1289,11 @@ def extract_all(
 
     diagnostics["total_player_facts"] = len(all_player_facts)
     diagnostics["total_team_facts"] = len(all_team_facts)
+    diagnostics["integrity_errors"] = validate_dataset_integrity(
+        match_facts=all_match_facts,
+        player_match_facts=all_player_facts,
+        team_match_facts=all_team_facts,
+    )
 
     return {
         "player_match_facts": all_player_facts,

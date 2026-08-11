@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 
 from src.extraction.match_facts import (
-    extract_all, persist, load_json,
+    extract_all, persist, load_json, validate_dataset_integrity,
     _extract_match_facts, _extract_player_match_facts, _extract_team_match_facts,
     DATA_ROOT, COMPETITION_ID, SEASON_ID,
 )
@@ -270,6 +270,143 @@ def test_empty_position_rows_count():
                 if not (player.get("positions") or []):
                     empty_count += 1
     assert empty_count == 1249, f"Empty position rows: {empty_count}, expected 1249"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Dataset integrity
+# ---------------------------------------------------------------------------
+
+
+def test_dataset_integrity_detects_cross_record_inconsistencies():
+    """Dataset-level validation must enforce competition-neutral relationships."""
+    from types import SimpleNamespace
+
+    matches = [
+        SimpleNamespace(match_id=1),
+        SimpleNamespace(match_id=1),
+        SimpleNamespace(match_id=2),
+    ]
+    players = [
+        SimpleNamespace(match_id=1),
+        SimpleNamespace(match_id=999),
+    ]
+    teams = [
+        SimpleNamespace(match_id=1),
+        SimpleNamespace(match_id=1),
+        SimpleNamespace(match_id=2),
+    ]
+
+    errors = validate_dataset_integrity(
+        match_facts=matches,
+        player_match_facts=players,
+        team_match_facts=teams,
+    )
+
+    assert any("duplicate match_id" in e.lower() for e in errors)
+    assert any("unknown match_id" in e.lower() for e in errors)
+    assert any("exactly 2 team" in e.lower() for e in errors)
+
+
+def test_extract_all_reports_dataset_integrity_errors(monkeypatch):
+    """extract_all must expose dataset-integrity validation in diagnostics."""
+    from types import SimpleNamespace
+    import src.extraction.match_facts as match_facts_module
+
+    synthetic_match = {
+        "match_id": 1,
+        "match_date": "2026-01-01",
+        "competition_stage": {"name": "Group Stage"},
+    }
+
+    def fake_load_json(path):
+        if "matches" in Path(path).parts:
+            return [synthetic_match]
+        return []
+
+    monkeypatch.setattr(match_facts_module, "load_json", fake_load_json)
+    monkeypatch.setattr(
+        match_facts_module,
+        "_resolve_dataset_identity",
+        lambda matches, competition_id, season_id: None,
+    )
+    monkeypatch.setattr(
+        match_facts_module,
+        "_extract_match_facts",
+        lambda *args, **kwargs: SimpleNamespace(
+            match_id=1,
+            home_team="Alpha",
+            away_team="Beta",
+            card_count_matches=True,
+        ),
+    )
+    monkeypatch.setattr(
+        match_facts_module,
+        "_extract_player_match_facts",
+        lambda *args, **kwargs: [SimpleNamespace(match_id=1)],
+    )
+    monkeypatch.setattr(
+        match_facts_module,
+        "_extract_team_match_facts",
+        lambda *args, **kwargs: [
+            SimpleNamespace(match_id=1),
+            SimpleNamespace(match_id=1),
+        ],
+    )
+
+    calls = []
+
+    def fake_validate(**kwargs):
+        calls.append(kwargs)
+        return ["synthetic integrity error"]
+
+    monkeypatch.setattr(
+        match_facts_module,
+        "validate_dataset_integrity",
+        fake_validate,
+    )
+
+    result = match_facts_module.extract_all(verbose=False)
+
+    assert len(calls) == 1
+    assert result["diagnostics"]["integrity_errors"] == [
+        "synthetic integrity error"
+    ]
+    assert len(calls[0]["match_facts"]) == 1
+    assert len(calls[0]["player_match_facts"]) == 1
+    assert len(calls[0]["team_match_facts"]) == 2
+
+
+def test_dataset_integrity_rejects_missing_ids_and_negative_player_values():
+    """Required identities and non-negative player metrics are dataset invariants."""
+    from types import SimpleNamespace
+
+    matches = [
+        SimpleNamespace(match_id=None),
+        SimpleNamespace(match_id=1),
+    ]
+    players = [
+        SimpleNamespace(
+            match_id=1,
+            player_id=None,
+            minutes=-1.0,
+            goals=-1,
+        ),
+    ]
+    teams = [
+        SimpleNamespace(match_id=1),
+        SimpleNamespace(match_id=1),
+    ]
+
+    errors = validate_dataset_integrity(
+        match_facts=matches,
+        player_match_facts=players,
+        team_match_facts=teams,
+    )
+
+    assert any("missing match_id" in e.lower() for e in errors)
+    assert any("missing player_id" in e.lower() for e in errors)
+    assert any("negative minutes" in e.lower() for e in errors)
+    assert any("negative goals" in e.lower() for e in errors)
 
 
 # ---------------------------------------------------------------------------
