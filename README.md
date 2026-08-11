@@ -224,6 +224,20 @@ Relevant retrieval regression suite: **100 tests passed**.
 
 > Retrieval quality metrics above are benchmarked on the WC2022 semantic ground truth. EPL 2015/16 has been validated for portability and runtime correctness but does not yet have an equivalent semantic ground-truth benchmark.
 
+### Faithfulness / Grounded Generation
+
+Generation is grounded against retrieved evidence and, where available, verified structured facts.
+
+- Unsupported semantic queries are stopped before the LLM is called when no authoritative structured answer exists, returning a deterministic refusal: `I don't have enough data to answer this question.`
+- A valid structured result is never blocked merely because semantic answerability is unanswerable - structured evidence takes precedence.
+- Semantic sources are formatted as `[Source N]` with a `chunk_id`, giving a deterministic mapping from cited sources back to the exact retrieved chunk. The CLI and Streamlit generation paths share this same source-attribution contract.
+- When structured evidence is available, it is presented to the LLM as explicitly authoritative. Generated numeric claims are checked against it, and a contradicting claim is corrected using the existing validation layer before the answer is returned.
+- Pure-semantic responses are not routed through structured numeric validation.
+
+Faithfulness regression: 9 dedicated tests passed; 82 relevant regression tests passed.
+
+> Scope: general semantic claim verification such as LLM-as-judge, NLI-based hallucination detection, or sentence-level claim verification is not part of the current production scope.
+
 ### Development Roadmap
 
 Completed:
@@ -232,10 +246,10 @@ Completed:
 - Dataset integrity validation
 - Structured query correctness
 - Chunking / Retrieval Quality
+- Faithfulness / Grounded Generation
 
 Next:
 
-- Faithfulness and grounded generation
 - Comparison Engine
 - User interface refinement
 - Final documentation
