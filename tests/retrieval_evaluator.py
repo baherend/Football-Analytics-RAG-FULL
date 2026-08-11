@@ -1197,9 +1197,17 @@ def run_retrieval_baseline(
     k_values = tuple(sorted(k_values))
     methods = tuple(methods)
 
-    resolved_ground_truth = (
-        ground_truth if ground_truth is not None else _default_ground_truth_bundle()
-    )
+    if ground_truth is not None:
+        resolved_ground_truth = ground_truth
+    elif artifact_paths is None:
+        resolved_ground_truth = _default_ground_truth_bundle()
+    else:
+        from tests.ground_truth_registry import resolve_ground_truth_bundle
+
+        resolved_ground_truth = resolve_ground_truth_bundle(
+            competition_id=artifact_paths.competition_id,
+            season_id=artifact_paths.season_id,
+        )
 
     if artifact_paths is not None:
         _ensure_ground_truth_matches_artifact_paths(
