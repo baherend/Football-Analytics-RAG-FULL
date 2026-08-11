@@ -292,7 +292,22 @@ def validate_query(q, stage_taxonomy: StageTaxonomy | None = None) -> Validation
                     periods = f.value
 
     if periods is not None:
-        bad_periods = [p for p in periods if p not in VALID_PERIODS]
+        normalized_periods = periods
+        if isinstance(periods, str):
+            alias = PERIOD_ALIASES.get(periods.lower().strip())
+            if alias is not None:
+                normalized_periods = alias
+            else:
+                try:
+                    normalized_periods = (int(periods),)
+                except ValueError:
+                    normalized_periods = (periods,)
+        elif isinstance(periods, int):
+            normalized_periods = (periods,)
+        elif isinstance(periods, list):
+            normalized_periods = tuple(periods)
+
+        bad_periods = [p for p in normalized_periods if p not in VALID_PERIODS]
         for p in bad_periods:
             issues.append(ValidationIssue(
                 "period", p, f"period {p} is not a valid open-play period"))
@@ -300,7 +315,7 @@ def validate_query(q, stage_taxonomy: StageTaxonomy | None = None) -> Validation
             spec = REGISTERED_METRICS[m]
             if not spec.period_sliceable:
                 droppable.append(ValidationIssue(
-                    "period", periods,
+                    "period", normalized_periods,
                     f"metric '{m}' is stored at match grain only and cannot be "
                     "sliced by period; period filter dropped for this metric"))
 

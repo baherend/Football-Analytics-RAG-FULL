@@ -292,25 +292,49 @@ def test_period_slicing_reads_by_period_blocks():
     assert _aggregate_period_aware([rec, rec], "passes_attempted", "sum", (1,)) == 12
 
 
-def test_period_filter_without_data_is_honest_partial(data):
-    """
-    The shipped artifact has no per-period breakdown. A period slice must then
-    be reported as a dropped filter (honest partial) and fall back to the match
-    total — never a silent wrong slice.
-    """
-    total = resolve(StructuredQuery(
-        intent="numeric", entity="player", metric="passes_attempted",
-        aggregation="sum", entity_name="Messi"), data).aggregated_value
 
-    sliced = resolve(StructuredQuery(
-        intent="numeric", entity="player", metric="passes_attempted",
-        aggregation="sum", entity_name="Messi",
-        filters=[Filter("period", "in", [1])]), data)
+def test_period_filter_without_data_is_honest_partial():
+    """Missing by_period data must produce an honest partial fallback."""
+    no_period_data = {
+        "player_match_facts": [
+            {
+                "player_id": 1,
+                "player_name": "Test Player",
+                "team_name": "Test FC",
+                "match_id": 10,
+                "passes_attempted": 10,
+            }
+        ],
+        "match_facts": [],
+        "team_match_facts": [],
+    }
+
+    total = resolve(
+        StructuredQuery(
+            intent="numeric",
+            entity="player",
+            metric="passes_attempted",
+            aggregation="sum",
+            entity_name="Test Player",
+        ),
+        no_period_data,
+    ).aggregated_value
+
+    sliced = resolve(
+        StructuredQuery(
+            intent="numeric",
+            entity="player",
+            metric="passes_attempted",
+            aggregation="sum",
+            entity_name="Test Player",
+            filters=[Filter("period", "in", [1])],
+        ),
+        no_period_data,
+    )
 
     assert sliced.status == "partial", f"status={sliced.status}"
-    assert "period" in sliced.dropped_filters, f"dropped={sliced.dropped_filters}"
-    assert sliced.aggregated_value == total, "expected honest fallback to the total"
-
+    assert "period" in sliced.dropped_filters
+    assert sliced.aggregated_value == total
 
 def test_period_filter_on_minutes_is_partial(data):
     """
@@ -444,23 +468,37 @@ def test_hennessey_was_dismissed(data):
     )
 
 
-def test_period_filter_returns_honest_partial(data):
-    """When by_period data is absent, period filters must return partial.
 
-    The current match_facts.json does not carry per-period breakdowns.
-    The resolver detects this and honestly reports the period filter as
-    dropped rather than silently returning an unsliced total.
-    """
+def test_period_filter_returns_honest_partial():
+    """Period slicing without by_period data must not pretend to be resolved."""
+    no_period_data = {
+        "player_match_facts": [
+            {
+                "player_id": 1,
+                "player_name": "Test Player",
+                "team_name": "Test FC",
+                "match_id": 10,
+                "goals": 3,
+            }
+        ],
+        "match_facts": [],
+        "team_match_facts": [],
+    }
+
     q = StructuredQuery(
-        intent="numeric", entity="player", metric="goals",
-        aggregation="sum", entity_name="Messi",
-        filters=[Filter("period", "in", [1])])
-    result = resolve(q, data)
-    assert result.status == "partial", (
-        f"Expected partial when by_period is absent, got {result.status}"
+        intent="numeric",
+        entity="player",
+        metric="goals",
+        aggregation="sum",
+        entity_name="Test Player",
+        filters=[Filter("period", "in", [1])],
     )
-    assert "period" in result.dropped_filters
 
+    result = resolve(q, no_period_data)
+
+    assert result.status == "partial"
+    assert "period" in result.dropped_filters
+    assert result.aggregated_value == 3
 
 # ---------------------------------------------------------------------------
 # Tests: Team-level queries
@@ -517,3 +555,51 @@ def test_team_first_shot_minute(data):
     assert result.aggregated_value is not None and result.aggregated_value >= 0, (
         f"Team first_shot_minute={result.aggregated_value}"
     )
+
+
+def test_period_filter_accepts_numeric_string_and_slices_by_period():
+    """Legacy Filter period values from parsing may arrive as numeric strings."""
+    from src.stage_taxonomy import StageTaxonomy
+
+    data = {
+        "player_match_facts": [
+            {
+                "player_id": 1,
+                "player_name": "Test Player",
+                "team_name": "Test FC",
+                "match_id": 10,
+                "stage": "Regular Season",
+                "goals": 3,
+                "by_period": {
+                    "1": {"goals": 1},
+                    "2": {"goals": 2},
+                },
+            }
+        ],
+        "match_facts": [],
+        "team_match_facts": [],
+    }
+
+    taxonomy = StageTaxonomy.discover(
+        stages=["Regular Season"],
+        knockout_stages=[],
+        group_stages=[],
+    )
+
+    q = StructuredQuery(
+        intent="numeric",
+        entity="player",
+        metric="goals",
+        aggregation="sum",
+        entity_name="Test Player",
+        filters=[
+            Filter("stage", "eq", "Regular Season"),
+            Filter("period", "eq", "1"),
+        ],
+    )
+
+    result = resolve(q, data=data, stage_taxonomy=taxonomy)
+
+    assert result.status == "resolved"
+    assert result.aggregated_value == 1
+    assert "period" not in result.dropped_filters
