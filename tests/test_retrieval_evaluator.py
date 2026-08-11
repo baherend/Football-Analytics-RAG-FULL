@@ -1334,3 +1334,897 @@ def test_semantic_ground_truth_unchanged_at_1_0():
     )
 
     assert SEMANTIC_GROUND_TRUTH_SCHEMA_VERSION == "1.0"
+
+
+# ---------------------------------------------------------------------------
+# 36. Competition portability -- ArtifactPaths propagation
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_case_threads_namespaced_artifact_paths():
+    from src.artifacts import ArtifactPaths
+
+    selected = ArtifactPaths(2, 27)
+    captured = {}
+
+    def fake_bm25(query, k=20, artifact_paths=None):
+        captured["artifact_paths"] = artifact_paths
+        return []
+
+    case = _make_case(required_docs=["doc1"])
+
+    evaluate_case(
+        case=case,
+        retrieval_fn=fake_bm25,
+        method="bm25",
+        document_levels={"doc1": "1"},
+        artifact_paths=selected,
+    )
+
+    assert captured["artifact_paths"] is selected
+
+
+def test_evaluate_case_threads_namespaced_artifact_paths_for_dense():
+    """Dense retrieval also receives artifact_paths when one is selected."""
+    from src.artifacts import ArtifactPaths
+
+    selected = ArtifactPaths(2, 27)
+    captured = {}
+
+    def fake_dense(query, k=20, level_filter=None, artifact_paths=None):
+        captured["artifact_paths"] = artifact_paths
+        return []
+
+    case = _make_case(required_docs=["doc1"])
+
+    evaluate_case(
+        case=case,
+        retrieval_fn=fake_dense,
+        method="dense",
+        document_levels={"doc1": "1"},
+        artifact_paths=selected,
+    )
+
+    assert captured["artifact_paths"] is selected
+
+
+def test_evaluate_case_threads_namespaced_artifact_paths_for_hybrid():
+    """Hybrid retrieval receives artifact_paths on every independent K execution."""
+    from src.artifacts import ArtifactPaths
+
+    selected = ArtifactPaths(2, 27)
+    captured = []
+
+    def fake_hybrid(
+        query, k=20, bm25_k=100, dense_k=100, level_filter=None, artifact_paths=None
+    ):
+        captured.append(artifact_paths)
+        return []
+
+    case = _make_case(required_docs=["doc1"])
+
+    evaluate_case(
+        case=case,
+        retrieval_fn=fake_hybrid,
+        method="hybrid",
+        document_levels={"doc1": "1"},
+        k_values=(1, 3),
+        artifact_paths=selected,
+    )
+
+    assert captured == [selected, selected]
+
+
+def test_evaluate_case_omits_artifact_paths_kwarg_for_legacy_bm25_fake():
+    """A legacy BM25 fake with no artifact_paths parameter still works when None."""
+
+    def fake_bm25(query, k=20):
+        return []
+
+    case = _make_case(required_docs=["doc1"])
+
+    result = evaluate_case(
+        case=case,
+        retrieval_fn=fake_bm25,
+        method="bm25",
+        document_levels={"doc1": "1"},
+    )
+
+    assert result["method"] == "bm25"
+
+
+def test_evaluate_case_omits_artifact_paths_kwarg_for_legacy_dense_fake():
+    """A legacy Dense fake with no artifact_paths parameter still works when None."""
+
+    def fake_dense(query, k=20, level_filter=None):
+        return []
+
+    case = _make_case(required_docs=["doc1"])
+
+    result = evaluate_case(
+        case=case,
+        retrieval_fn=fake_dense,
+        method="dense",
+        document_levels={"doc1": "1"},
+    )
+
+    assert result["method"] == "dense"
+
+
+def test_evaluate_case_omits_artifact_paths_kwarg_for_legacy_hybrid_fake():
+    """A legacy Hybrid fake with no artifact_paths parameter still works when None."""
+
+    def fake_hybrid(query, k=20, bm25_k=100, dense_k=100, level_filter=None):
+        return []
+
+    case = _make_case(required_docs=["doc1"])
+
+    result = evaluate_case(
+        case=case,
+        retrieval_fn=fake_hybrid,
+        method="hybrid",
+        document_levels={"doc1": "1"},
+    )
+
+    assert result["method"] == "hybrid"
+
+
+def test_evaluate_retrieval_method_forwards_artifact_paths_to_every_case():
+    """evaluate_retrieval_method threads artifact_paths through to each case."""
+    from src.artifacts import ArtifactPaths
+
+    selected = ArtifactPaths(2, 27)
+    captured = []
+
+    class FakeModule:
+        @staticmethod
+        def bm25_search(query, k=20, artifact_paths=None):
+            captured.append(artifact_paths)
+            return []
+
+    cases = [
+        _make_case(case_id="c1", required_docs=["doc1"]),
+        _make_case(case_id="c2", required_docs=["doc1"]),
+    ]
+
+    evaluate_retrieval_method(
+        method="bm25",
+        cases=cases,
+        retrieval_module=FakeModule,
+        document_levels={"doc1": "1"},
+        artifact_paths=selected,
+    )
+
+    assert captured == [selected, selected]
+
+
+# ---------------------------------------------------------------------------
+# 37. Competition portability -- Ground Truth injection (GroundTruthBundle)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_ground_truth_and_chunks_defaults_to_wc2022_bundle():
+    """Omitting `ground_truth` keeps validating against the real WC2022 benchmark."""
+    from tests.retrieval_evaluator import validate_ground_truth_and_chunks
+    from tests.semantic_ground_truth import SEMANTIC_GROUND_TRUTH_METADATA
+
+    metadata, cases, document_levels = validate_ground_truth_and_chunks()
+
+    assert metadata is SEMANTIC_GROUND_TRUTH_METADATA
+    assert len(cases) == 24
+
+
+def test_validate_ground_truth_and_chunks_accepts_custom_ground_truth_bundle(tmp_path):
+    """A caller-supplied GroundTruthBundle is used instead of the WC2022 default."""
+    import hashlib
+
+    from tests.retrieval_evaluator import (
+        GroundTruthBundle,
+        validate_ground_truth_and_chunks,
+    )
+
+    chunks_path = tmp_path / "chunks.json"
+    chunks = [{"document_id": "epl-doc-1", "level": "1", "chunk_id": "c1", "text": "x"}]
+    chunks_path.write_text(json.dumps(chunks), encoding="utf-8")
+    actual_hash = hashlib.sha256(chunks_path.read_bytes()).hexdigest()
+
+    metadata = {
+        "dataset_id": "epl-2015-2016",
+        "schema_version": "1.0",
+        "chunks_sha256": actual_hash,
+        "expected_case_count": 1,
+    }
+    cases = [_make_case(case_id="epl-01", required_docs=["epl-doc-1"])]
+
+    validate_calls = []
+
+    def fake_validate_fn(meta, c, path):
+        validate_calls.append((meta, c, path))
+        return []
+
+    bundle = GroundTruthBundle(metadata=metadata, cases=cases, validate_fn=fake_validate_fn)
+
+    resolved_metadata, resolved_cases, document_levels = validate_ground_truth_and_chunks(
+        chunks_path=str(chunks_path),
+        ground_truth=bundle,
+    )
+
+    assert resolved_metadata is metadata
+    assert resolved_cases is cases
+    assert document_levels == {"epl-doc-1": "1"}
+    assert len(validate_calls) == 1
+    assert validate_calls[0][0] is metadata
+    assert validate_calls[0][1] is cases
+
+
+def test_validate_ground_truth_and_chunks_rejects_hash_mismatch_for_custom_bundle(tmp_path):
+    """Chunks-hash integrity checking is not weakened for a custom benchmark."""
+    from tests.retrieval_evaluator import (
+        GroundTruthBundle,
+        RetrievalEvaluationError,
+        validate_ground_truth_and_chunks,
+    )
+
+    chunks_path = tmp_path / "chunks.json"
+    chunks_path.write_text(json.dumps([{"document_id": "d1", "level": "1"}]), encoding="utf-8")
+
+    metadata = {
+        "dataset_id": "epl-2015-2016",
+        "schema_version": "1.0",
+        "chunks_sha256": "0" * 64,  # deliberately wrong
+        "expected_case_count": 0,
+    }
+    bundle = GroundTruthBundle(metadata=metadata, cases=[], validate_fn=lambda m, c, p: [])
+
+    with pytest.raises(RetrievalEvaluationError, match="hash mismatch"):
+        validate_ground_truth_and_chunks(chunks_path=str(chunks_path), ground_truth=bundle)
+
+
+def test_validate_ground_truth_and_chunks_propagates_custom_validator_errors(tmp_path):
+    """A custom benchmark's own structural validator errors still fail evaluation."""
+    import hashlib
+
+    from tests.retrieval_evaluator import (
+        GroundTruthBundle,
+        RetrievalEvaluationError,
+        validate_ground_truth_and_chunks,
+    )
+
+    chunks_path = tmp_path / "chunks.json"
+    chunks_path.write_text("[]", encoding="utf-8")
+    actual_hash = hashlib.sha256(chunks_path.read_bytes()).hexdigest()
+
+    metadata = {"dataset_id": "x", "chunks_sha256": actual_hash}
+    bundle = GroundTruthBundle(
+        metadata=metadata, cases=[], validate_fn=lambda m, c, p: ["synthetic error"]
+    )
+
+    with pytest.raises(RetrievalEvaluationError, match="synthetic error"):
+        validate_ground_truth_and_chunks(chunks_path=str(chunks_path), ground_truth=bundle)
+
+
+# ---------------------------------------------------------------------------
+# 38. Competition portability -- run_retrieval_baseline artifact resolution
+# ---------------------------------------------------------------------------
+
+
+def _fake_gt_fixture():
+    fake_metadata = {
+        "dataset_id": "test",
+        "schema_version": "1.0",
+        "chunks_sha256": "abc",
+        "expected_case_count": 1,
+    }
+    fake_cases = [_make_case(case_id="test-01", required_docs=["doc1"])]
+    fake_doc_levels = {"doc1": "1"}
+    return fake_metadata, fake_cases, fake_doc_levels
+
+
+def test_run_retrieval_baseline_resolves_namespaced_chunks_path(tmp_path):
+    """run_retrieval_baseline validates against the selected dataset's chunks.json."""
+    from src.artifacts import ArtifactPaths
+    from tests.retrieval_evaluator import GroundTruthBundle, run_retrieval_baseline
+
+    selected = ArtifactPaths(2, 27, output_root=tmp_path)
+    fake_metadata, fake_cases, fake_doc_levels = _fake_gt_fixture()
+    bundle = GroundTruthBundle(metadata=fake_metadata, cases=fake_cases, validate_fn=lambda m, c, p: [])
+
+    mock_module = MagicMock()
+    mock_module.bm25_search = MagicMock(return_value=[])
+    mock_module._bm25_cache = None
+    mock_module._chunks_cache = None
+
+    captured_chunks_paths = []
+
+    def fake_validate(chunks_path, ground_truth=None):
+        captured_chunks_paths.append(chunks_path)
+        return fake_metadata, fake_cases, fake_doc_levels
+
+    with patch(
+        "tests.retrieval_evaluator.validate_ground_truth_and_chunks",
+        side_effect=fake_validate,
+    ), patch(
+        "tests.retrieval_evaluator.load_retrieval_module",
+        return_value=mock_module,
+    ):
+        run_retrieval_baseline(
+            methods=("bm25",),
+            k_values=(1,),
+            candidate_chunk_depth=100,
+            artifact_paths=selected,
+            ground_truth=bundle,
+        )
+
+    assert captured_chunks_paths == [str(selected.chunks)]
+
+
+def test_run_retrieval_baseline_resolves_namespaced_chroma_dir(tmp_path):
+    """run_retrieval_baseline copies the selected dataset's Chroma dir, not the legacy one."""
+    from contextlib import contextmanager as _contextmanager
+
+    from src.artifacts import ArtifactPaths
+    from tests.retrieval_evaluator import GroundTruthBundle, run_retrieval_baseline
+
+    selected = ArtifactPaths(2, 27, output_root=tmp_path)
+    fake_metadata, fake_cases, fake_doc_levels = _fake_gt_fixture()
+    bundle = GroundTruthBundle(metadata=fake_metadata, cases=fake_cases, validate_fn=lambda m, c, p: [])
+
+    mock_module = MagicMock()
+    mock_module.dense_search = MagicMock(return_value=[])
+    mock_module._bm25_cache = None
+    mock_module._chunks_cache = None
+
+    captured_chroma_dirs = []
+
+    @_contextmanager
+    def fake_chroma_copy(original_dir, mod):
+        captured_chroma_dirs.append(original_dir)
+        yield original_dir
+
+    with patch(
+        "tests.retrieval_evaluator.validate_ground_truth_and_chunks",
+        return_value=(fake_metadata, fake_cases, fake_doc_levels),
+    ), patch(
+        "tests.retrieval_evaluator.load_retrieval_module",
+        return_value=mock_module,
+    ), patch(
+        "tests.retrieval_evaluator.temporary_chroma_copy",
+        side_effect=fake_chroma_copy,
+    ):
+        run_retrieval_baseline(
+            methods=("dense",),
+            k_values=(1,),
+            candidate_chunk_depth=100,
+            artifact_paths=selected,
+            ground_truth=bundle,
+        )
+
+    assert captured_chroma_dirs == [str(selected.chroma_dir)]
+
+
+# ---------------------------------------------------------------------------
+# 40. Competition portability -- Dense/Hybrid must never bypass the
+#     temporary Chroma copy for a namespaced dataset (TemporaryChromaArtifactPaths)
+# ---------------------------------------------------------------------------
+
+
+def test_namespaced_dense_evaluation_receives_temporary_chroma_view(tmp_path):
+    """Dense evaluation for a namespaced dataset must receive an
+    artifact-path view whose chroma_dir points at the temporary Chroma
+    copy, while chunks/bm25_index/chroma_collection_name still resolve to
+    the real, selected dataset -- proving Dense never opens the source
+    Chroma directory directly during evaluation."""
+    from contextlib import contextmanager as _contextmanager
+
+    from src.artifacts import ArtifactPaths
+    from tests.retrieval_evaluator import GroundTruthBundle, run_retrieval_baseline
+
+    selected = ArtifactPaths(2, 27, output_root=tmp_path)
+    tmp_chroma_copy = str(tmp_path / "tmp_chroma_copy")
+    fake_metadata, fake_cases, fake_doc_levels = _fake_gt_fixture()
+    bundle = GroundTruthBundle(
+        metadata=fake_metadata, cases=fake_cases, validate_fn=lambda m, c, p: []
+    )
+
+    captured = []
+
+    def fake_dense(query, k=20, level_filter=None, artifact_paths=None):
+        captured.append(artifact_paths)
+        return []
+
+    mock_module = MagicMock()
+    mock_module.dense_search = fake_dense
+    mock_module._bm25_cache = None
+    mock_module._chunks_cache = None
+
+    @_contextmanager
+    def fake_chroma_copy(original_dir, mod):
+        yield tmp_chroma_copy
+
+    with patch(
+        "tests.retrieval_evaluator.validate_ground_truth_and_chunks",
+        return_value=(fake_metadata, fake_cases, fake_doc_levels),
+    ), patch(
+        "tests.retrieval_evaluator.load_retrieval_module",
+        return_value=mock_module,
+    ), patch(
+        "tests.retrieval_evaluator.temporary_chroma_copy",
+        side_effect=fake_chroma_copy,
+    ):
+        run_retrieval_baseline(
+            methods=("dense",),
+            k_values=(1,),
+            candidate_chunk_depth=100,
+            artifact_paths=selected,
+            ground_truth=bundle,
+        )
+
+    assert len(captured) == 1
+    received = captured[0]
+    assert received is not selected
+    assert received.chroma_dir == Path(tmp_chroma_copy)
+    assert received.chunks == selected.chunks
+    assert received.bm25_index == selected.bm25_index
+    assert received.chroma_collection_name == selected.chroma_collection_name
+    assert received.competition_id == selected.competition_id
+    assert received.season_id == selected.season_id
+
+
+def test_namespaced_hybrid_evaluation_receives_same_temporary_chroma_view_for_every_k(tmp_path):
+    """Hybrid retrieval executes independently per K (Schema 2.0) -- every
+    one of those executions must receive the identical temporary-Chroma
+    artifact-path view (not the real artifact_paths, and not a fresh proxy
+    reconstructed per K)."""
+    from contextlib import contextmanager as _contextmanager
+
+    from src.artifacts import ArtifactPaths
+    from tests.retrieval_evaluator import GroundTruthBundle, run_retrieval_baseline
+
+    selected = ArtifactPaths(2, 27, output_root=tmp_path)
+    tmp_chroma_copy = str(tmp_path / "tmp_chroma_copy")
+    fake_metadata, fake_cases, fake_doc_levels = _fake_gt_fixture()
+    bundle = GroundTruthBundle(
+        metadata=fake_metadata, cases=fake_cases, validate_fn=lambda m, c, p: []
+    )
+
+    captured = []
+
+    def fake_hybrid(
+        query, k=20, bm25_k=100, dense_k=100, level_filter=None, artifact_paths=None
+    ):
+        captured.append(artifact_paths)
+        return []
+
+    mock_module = MagicMock()
+    mock_module.hybrid_search = fake_hybrid
+    mock_module._bm25_cache = None
+    mock_module._chunks_cache = None
+
+    @_contextmanager
+    def fake_chroma_copy(original_dir, mod):
+        yield tmp_chroma_copy
+
+    with patch(
+        "tests.retrieval_evaluator.validate_ground_truth_and_chunks",
+        return_value=(fake_metadata, fake_cases, fake_doc_levels),
+    ), patch(
+        "tests.retrieval_evaluator.load_retrieval_module",
+        return_value=mock_module,
+    ), patch(
+        "tests.retrieval_evaluator.temporary_chroma_copy",
+        side_effect=fake_chroma_copy,
+    ):
+        run_retrieval_baseline(
+            methods=("hybrid",),
+            k_values=(1, 3, 5),
+            candidate_chunk_depth=100,
+            artifact_paths=selected,
+            ground_truth=bundle,
+        )
+
+    assert len(captured) == 3  # one independent execution per K
+    assert all(c.chroma_dir == Path(tmp_chroma_copy) for c in captured)
+    assert all(c is captured[0] for c in captured), "expected the same view object every K"
+
+
+def test_temporary_chroma_view_does_not_mutate_original_artifact_paths(tmp_path):
+    """Constructing a TemporaryChromaArtifactPaths view must never mutate
+    the original, selected ArtifactPaths object it wraps."""
+    from src.artifacts import ArtifactPaths
+    from tests.retrieval_evaluator import TemporaryChromaArtifactPaths
+
+    original = ArtifactPaths(2, 27, output_root=tmp_path)
+    original_chroma_dir = original.chroma_dir
+    original_chunks = original.chunks
+    original_collection_name = original.chroma_collection_name
+
+    view = TemporaryChromaArtifactPaths(
+        base=original, chroma_dir_override=tmp_path / "tmp_chroma_copy"
+    )
+
+    # The view overrides chroma_dir...
+    assert view.chroma_dir == tmp_path / "tmp_chroma_copy"
+    # ...but delegates everything else, and the original is untouched.
+    assert original.chroma_dir == original_chroma_dir
+    assert original.chunks == original_chunks
+    assert original.chroma_collection_name == original_collection_name
+    assert view.chunks == original_chunks
+    assert view.bm25_index == original.bm25_index
+    assert view.chroma_collection_name == original_collection_name
+    assert view.base is original
+
+
+def test_namespaced_bm25_only_evaluation_receives_original_artifact_paths(tmp_path):
+    """BM25-only namespaced evaluation must receive the real, selected
+    artifact_paths object directly (by identity, not a proxy) and must
+    never trigger a temporary Chroma copy at all."""
+    from src.artifacts import ArtifactPaths
+    from tests.retrieval_evaluator import GroundTruthBundle, run_retrieval_baseline
+
+    selected = ArtifactPaths(2, 27, output_root=tmp_path)
+    fake_metadata, fake_cases, fake_doc_levels = _fake_gt_fixture()
+    bundle = GroundTruthBundle(
+        metadata=fake_metadata, cases=fake_cases, validate_fn=lambda m, c, p: []
+    )
+
+    captured = []
+
+    def fake_bm25(query, k=20, artifact_paths=None):
+        captured.append(artifact_paths)
+        return []
+
+    mock_module = MagicMock()
+    mock_module.bm25_search = fake_bm25
+    mock_module._bm25_cache = None
+    mock_module._chunks_cache = None
+
+    with patch(
+        "tests.retrieval_evaluator.validate_ground_truth_and_chunks",
+        return_value=(fake_metadata, fake_cases, fake_doc_levels),
+    ), patch(
+        "tests.retrieval_evaluator.load_retrieval_module",
+        return_value=mock_module,
+    ), patch(
+        "tests.retrieval_evaluator.temporary_chroma_copy",
+    ) as mock_chroma_copy:
+        run_retrieval_baseline(
+            methods=("bm25",),
+            k_values=(1,),
+            candidate_chunk_depth=100,
+            artifact_paths=selected,
+            ground_truth=bundle,
+        )
+
+    assert len(captured) == 1
+    assert captured[0] is selected
+    mock_chroma_copy.assert_not_called()
+
+
+def test_legacy_run_retrieval_baseline_passes_no_artifact_paths_to_chroma_methods():
+    """Legacy (artifact_paths=None) Dense/Hybrid evaluation must not pass an
+    artifact_paths kwarg at all -- legacy retrieval functions/fakes with no
+    artifact_paths parameter must keep working, relying purely on
+    temporary_chroma_copy's existing module-level CHROMA_DIR patch."""
+    from contextlib import contextmanager as _contextmanager
+
+    from tests.retrieval_evaluator import run_retrieval_baseline
+
+    fake_metadata, fake_cases, fake_doc_levels = _fake_gt_fixture()
+
+    captured = []
+
+    def legacy_fake_dense(query, k=20, level_filter=None):
+        # No artifact_paths parameter at all -- must not be called with one.
+        captured.append("called")
+        return []
+
+    mock_module = MagicMock()
+    mock_module.dense_search = legacy_fake_dense
+    mock_module._bm25_cache = None
+    mock_module._chunks_cache = None
+
+    @_contextmanager
+    def fake_chroma_copy(original_dir, mod):
+        yield "/tmp/fake-legacy-chroma"
+
+    with patch(
+        "tests.retrieval_evaluator.validate_ground_truth_and_chunks",
+        return_value=(fake_metadata, fake_cases, fake_doc_levels),
+    ), patch(
+        "tests.retrieval_evaluator.load_retrieval_module",
+        return_value=mock_module,
+    ), patch(
+        "tests.retrieval_evaluator.temporary_chroma_copy",
+        side_effect=fake_chroma_copy,
+    ):
+        run_retrieval_baseline(
+            methods=("dense",),
+            k_values=(1,),
+            candidate_chunk_depth=100,
+        )
+
+    assert captured == ["called"]
+
+
+def test_run_retrieval_baseline_integrity_checks_remain_active_for_namespaced_dataset(tmp_path):
+    """The pre/post Chroma SHA-256 integrity check in run_retrieval_baseline's
+    result must still run for namespaced datasets, using the REAL
+    temporary_chroma_copy (not mocked) -- proving the switch to
+    TemporaryChromaArtifactPaths did not disable or skip integrity checks,
+    and that Dense actually went through the copy, not the real directory."""
+    from src.artifacts import ArtifactPaths
+    from tests.retrieval_evaluator import GroundTruthBundle, run_retrieval_baseline
+
+    selected = ArtifactPaths(2, 27, output_root=tmp_path)
+    selected.chroma_dir.mkdir(parents=True, exist_ok=True)
+    sqlite_path = selected.chroma_dir / "chroma.sqlite3"
+    sqlite_path.write_bytes(b"fake sqlite content for integrity test")
+
+    fake_metadata, fake_cases, fake_doc_levels = _fake_gt_fixture()
+    bundle = GroundTruthBundle(
+        metadata=fake_metadata, cases=fake_cases, validate_fn=lambda m, c, p: []
+    )
+
+    captured_dense_artifact_paths = []
+
+    def fake_dense(query, k=20, level_filter=None, artifact_paths=None):
+        captured_dense_artifact_paths.append(artifact_paths)
+        return []
+
+    mock_module = MagicMock()
+    mock_module.dense_search = fake_dense
+    mock_module._bm25_cache = None
+    mock_module._chunks_cache = None
+
+    with patch(
+        "tests.retrieval_evaluator.validate_ground_truth_and_chunks",
+        return_value=(fake_metadata, fake_cases, fake_doc_levels),
+    ), patch(
+        "tests.retrieval_evaluator.load_retrieval_module",
+        return_value=mock_module,
+    ):
+        result = run_retrieval_baseline(
+            methods=("dense",),
+            k_values=(1,),
+            candidate_chunk_depth=100,
+            artifact_paths=selected,
+            ground_truth=bundle,
+        )
+
+    # Integrity block is populated and reports the source unchanged.
+    assert result["integrity"]["original_chroma_sha256_before"] is not None
+    assert result["integrity"]["original_chroma_unchanged"] is True
+    assert result["integrity"]["temporary_chroma_used"] is True
+
+    # The retrieval call actually went through a copy, not the real
+    # selected.chroma_dir.
+    assert len(captured_dense_artifact_paths) == 1
+    assert captured_dense_artifact_paths[0].chroma_dir != selected.chroma_dir
+
+    # Source file on disk is untouched.
+    assert sqlite_path.read_bytes() == b"fake sqlite content for integrity test"
+
+
+def test_run_retrieval_baseline_uses_legacy_paths_when_artifact_paths_is_none():
+    """Legacy no-selection behavior keeps validating output/chunks.json."""
+    from tests.retrieval_evaluator import run_retrieval_baseline
+
+    fake_metadata, fake_cases, fake_doc_levels = _fake_gt_fixture()
+
+    mock_module = MagicMock()
+    mock_module.bm25_search = MagicMock(return_value=[])
+    mock_module._bm25_cache = None
+    mock_module._chunks_cache = None
+
+    captured_chunks_paths = []
+
+    def fake_validate(chunks_path, ground_truth=None):
+        captured_chunks_paths.append(chunks_path)
+        return fake_metadata, fake_cases, fake_doc_levels
+
+    with patch(
+        "tests.retrieval_evaluator.validate_ground_truth_and_chunks",
+        side_effect=fake_validate,
+    ), patch(
+        "tests.retrieval_evaluator.load_retrieval_module",
+        return_value=mock_module,
+    ):
+        run_retrieval_baseline(
+            methods=("bm25",),
+            k_values=(1,),
+            candidate_chunk_depth=100,
+        )
+
+    assert captured_chunks_paths == [os.path.join(".", "output", "chunks.json")]
+
+
+def test_run_retrieval_baseline_refuses_non_wc2022_namespaced_dataset_without_ground_truth(tmp_path):
+    """A non-WC2022 namespaced dataset with no explicit benchmark is refused,
+    not silently paired with the default WC2022 Semantic Ground Truth."""
+    from src.artifacts import ArtifactPaths
+    from tests.retrieval_evaluator import RetrievalEvaluationError, run_retrieval_baseline
+
+    selected = ArtifactPaths(2, 27, output_root=tmp_path)
+
+    with pytest.raises(RetrievalEvaluationError, match="Ground Truth"):
+        run_retrieval_baseline(artifact_paths=selected)
+
+
+def test_run_retrieval_baseline_does_not_reject_namespaced_wc2022_identity(tmp_path):
+    """Regression test: a namespaced artifact_paths whose (competition_id,
+    season_id) matches the default WC2022 benchmark's own declared identity
+    must NOT be rejected by the 'no explicit benchmark' guard -- it falls
+    through to the default WC2022 GroundTruthBundle, and real chunks
+    SHA-256 validation is what determines whether the namespaced snapshot
+    actually matches."""
+    from src.artifacts import ArtifactPaths
+    from tests.retrieval_evaluator import run_retrieval_baseline
+    from tests.semantic_ground_truth import SEMANTIC_GROUND_TRUTH_METADATA
+
+    selected = ArtifactPaths(43, 106, output_root=tmp_path)
+    fake_metadata, fake_cases, fake_doc_levels = _fake_gt_fixture()
+
+    mock_module = MagicMock()
+    mock_module.bm25_search = MagicMock(return_value=[])
+    mock_module._bm25_cache = None
+    mock_module._chunks_cache = None
+
+    captured_ground_truths = []
+
+    def fake_validate(chunks_path, ground_truth=None):
+        captured_ground_truths.append(ground_truth)
+        return fake_metadata, fake_cases, fake_doc_levels
+
+    with patch(
+        "tests.retrieval_evaluator.validate_ground_truth_and_chunks",
+        side_effect=fake_validate,
+    ), patch(
+        "tests.retrieval_evaluator.load_retrieval_module",
+        return_value=mock_module,
+    ):
+        # Must not raise -- this is the exact bug ChatGPT reported.
+        run_retrieval_baseline(
+            methods=("bm25",),
+            k_values=(1,),
+            candidate_chunk_depth=100,
+            artifact_paths=selected,
+        )
+
+    assert len(captured_ground_truths) == 1
+    assert captured_ground_truths[0].metadata is SEMANTIC_GROUND_TRUTH_METADATA
+
+
+def test_run_retrieval_baseline_accepts_explicit_ground_truth_matching_identity(tmp_path):
+    """An explicit GroundTruthBundle whose declared identity matches
+    artifact_paths is accepted through the identity guard."""
+    from src.artifacts import ArtifactPaths
+    from tests.retrieval_evaluator import GroundTruthBundle, run_retrieval_baseline
+
+    selected = ArtifactPaths(2, 27, output_root=tmp_path)
+    fake_metadata = {
+        "dataset_id": "epl-2015-2016",
+        "schema_version": "1.0",
+        "chunks_sha256": "abc",
+        "expected_case_count": 1,
+        "competition_id": 2,
+        "season_id": 27,
+    }
+    fake_cases = [_make_case(case_id="epl-01", required_docs=["doc1"])]
+    fake_doc_levels = {"doc1": "1"}
+    bundle = GroundTruthBundle(
+        metadata=fake_metadata, cases=fake_cases, validate_fn=lambda m, c, p: []
+    )
+
+    mock_module = MagicMock()
+    mock_module.bm25_search = MagicMock(return_value=[])
+    mock_module._bm25_cache = None
+    mock_module._chunks_cache = None
+
+    with patch(
+        "tests.retrieval_evaluator.validate_ground_truth_and_chunks",
+        return_value=(fake_metadata, fake_cases, fake_doc_levels),
+    ), patch(
+        "tests.retrieval_evaluator.load_retrieval_module",
+        return_value=mock_module,
+    ):
+        result = run_retrieval_baseline(
+            methods=("bm25",),
+            k_values=(1,),
+            candidate_chunk_depth=100,
+            artifact_paths=selected,
+            ground_truth=bundle,
+        )
+
+    assert "bm25" in result["methods"]
+
+
+def test_run_retrieval_baseline_rejects_explicit_ground_truth_mismatched_identity(tmp_path):
+    """An explicit GroundTruthBundle whose declared competition_id/season_id
+    does not match artifact_paths is rejected before any retrieval."""
+    from src.artifacts import ArtifactPaths
+    from tests.retrieval_evaluator import (
+        GroundTruthBundle,
+        RetrievalEvaluationError,
+        run_retrieval_baseline,
+    )
+
+    selected = ArtifactPaths(2, 27, output_root=tmp_path)
+
+    def _bundle(competition_id, season_id):
+        return GroundTruthBundle(
+            metadata={
+                "dataset_id": "wrong-dataset",
+                "chunks_sha256": "abc",
+                "competition_id": competition_id,
+                "season_id": season_id,
+            },
+            cases=[],
+            validate_fn=lambda m, c, p: [],
+        )
+
+    with patch("tests.retrieval_evaluator.load_retrieval_module") as mock_load:
+        with pytest.raises(RetrievalEvaluationError, match="identity mismatch"):
+            run_retrieval_baseline(artifact_paths=selected, ground_truth=_bundle(999, 27))
+        with pytest.raises(RetrievalEvaluationError, match="identity mismatch"):
+            run_retrieval_baseline(artifact_paths=selected, ground_truth=_bundle(2, 999))
+        mock_load.assert_not_called()
+
+
+def test_cli_does_not_falsely_reject_namespaced_wc2022_identity(capsys):
+    """CLI-level regression test for the exact reported bug: selecting the
+    namespaced WC2022 identity (competition_id=43, season_id=106) must not
+    be rejected by the 'no explicit Ground Truth benchmark' guard. The
+    namespaced WC2022 snapshot doesn't exist on disk in this repo, so this
+    now fails on real chunks validation instead -- not a false rejection."""
+    from tests.retrieval_evaluator import main
+
+    exit_code = main(
+        [
+            "--competition-id", "43",
+            "--season-id", "106",
+            "--namespaced",
+            "--methods", "bm25",
+            "--k-values", "1",
+            "--candidate-chunk-depth", "100",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert "was supplied without an explicit Ground Truth benchmark" not in captured.err
+    assert "identity does not match the default benchmark" not in captured.err
+    assert exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# 39. Competition portability -- CLI dataset selection
+# ---------------------------------------------------------------------------
+
+
+def test_parse_args_defaults_have_no_dataset_selection():
+    """No-argument CLI invocation requests no competition/season selection."""
+    from tests.retrieval_evaluator import parse_args
+
+    args = parse_args([])
+
+    assert args.competition_id is None
+    assert args.season_id is None
+    assert args.namespaced is False
+
+
+def test_cli_requires_competition_and_season_id_together():
+    """--competition-id and --season-id must be given together."""
+    from tests.retrieval_evaluator import main
+
+    assert main(["--competition-id", "2"]) == 1
+    assert main(["--season-id", "27"]) == 1
+
+
+def test_cli_refuses_namespaced_dataset_without_ground_truth_benchmark(capsys):
+    """Selecting a namespaced competition/season on the CLI fails clearly, not silently."""
+    from tests.retrieval_evaluator import main
+
+    exit_code = main(["--competition-id", "2", "--season-id", "27"])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Ground Truth" in captured.err

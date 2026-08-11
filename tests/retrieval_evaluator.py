@@ -20,8 +20,11 @@ import sys
 import tempfile
 from collections import Counter
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+
+from src.artifacts import ArtifactPaths, resolve_runtime_artifact_paths
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -53,27 +56,117 @@ class RetrievalEvaluationError(Exception):
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class GroundTruthBundle:
+    """
+    Explicit Ground Truth benchmark selection for the evaluator.
+
+    The evaluator is infrastructure, not a WC2022-only tool: it needs to
+    validate/score whichever benchmark's cases match the chunks under
+    evaluation. `validate_ground_truth_and_chunks` and
+    `run_retrieval_baseline` default to `None`, which resolves to the
+    existing, unmodified WC2022 Semantic Ground Truth
+    (tests.semantic_ground_truth) -- unchanged legacy behavior. Passing a
+    bundle lets a caller supply a different competition's metadata/cases/
+    validator instead, without coupling this module to one fixed source.
+
+    `validate_fn` has the same shape as
+    `tests.semantic_ground_truth.validate_semantic_ground_truth`:
+    (metadata, cases, chunks_path) -> list[str] of error strings.
+    """
+
+    metadata: dict
+    cases: list
+    validate_fn: Callable[[dict, list, Any], List[str]]
+
+
+def _default_ground_truth_bundle() -> "GroundTruthBundle":
+    from tests.semantic_ground_truth import (
+        SEMANTIC_GROUND_TRUTH,
+        SEMANTIC_GROUND_TRUTH_METADATA,
+        validate_semantic_ground_truth,
+    )
+
+    return GroundTruthBundle(
+        metadata=SEMANTIC_GROUND_TRUTH_METADATA,
+        cases=SEMANTIC_GROUND_TRUTH,
+        validate_fn=validate_semantic_ground_truth,
+    )
+
+
+def _ensure_ground_truth_matches_artifact_paths(
+    metadata: dict,
+    artifact_paths: ArtifactPaths,
+    ground_truth_was_explicit: bool,
+) -> None:
+    """Reject a Ground Truth benchmark whose declared identity doesn't match
+    the selected artifact_paths, before any retrieval happens.
+
+    Only checks when the benchmark metadata declares *both*
+    `competition_id` and `season_id` -- e.g. the WC2022 Semantic Ground
+    Truth metadata does (see tests/semantic_ground_truth.py). A benchmark
+    that doesn't declare an identity isn't constrained here; the chunks
+    SHA-256 check in `validate_ground_truth_and_chunks` still catches a
+    snapshot mismatch regardless.
+
+    This is what lets a namespaced WC2022 selection (competition_id=43,
+    season_id=106 -- the identity the default bundle's own metadata
+    declares) fall through to the default WC2022 GroundTruthBundle instead
+    of being rejected outright: the check compares declared identities, not
+    "is artifact_paths None".
+    """
+    if "competition_id" not in metadata or "season_id" not in metadata:
+        return
+
+    declared = (metadata["competition_id"], metadata["season_id"])
+    selected = (artifact_paths.competition_id, artifact_paths.season_id)
+    if declared == selected:
+        return
+
+    if ground_truth_was_explicit:
+        raise RetrievalEvaluationError(
+            "Ground Truth benchmark identity mismatch: benchmark declares "
+            f"competition_id={declared[0]}, season_id={declared[1]}, but the "
+            f"selected artifact_paths is competition_id={selected[0]}, "
+            f"season_id={selected[1]}. Refusing to evaluate mismatched "
+            "chunks against this benchmark's relevance judgments."
+        )
+
+    raise RetrievalEvaluationError(
+        "No Ground Truth benchmark was supplied for artifact_paths "
+        f"(competition_id={selected[0]}, season_id={selected[1]}), and its "
+        "identity does not match the default benchmark "
+        f"(competition_id={declared[0]}, season_id={declared[1]}). Refusing "
+        "to pair its chunks with the default benchmark -- that would "
+        "silently produce meaningless metrics. Supply a GroundTruthBundle "
+        "for this dataset."
+    )
+
+
 def validate_ground_truth_and_chunks(
     chunks_path: str = "output/chunks.json",
+    ground_truth: Optional[GroundTruthBundle] = None,
 ) -> Tuple[dict, list, dict]:
-    """Validate Ground Truth and chunks snapshot.
+    """Validate a Ground Truth benchmark against a chunks snapshot.
+
+    `ground_truth` defaults to the existing WC2022 Semantic Ground Truth
+    (tests.semantic_ground_truth) when not supplied -- unchanged legacy
+    behavior. Passing a `GroundTruthBundle` validates/scores a different
+    benchmark instead.
 
     Returns (metadata, cases, document_levels) where document_levels maps
     document_id -> level for every chunk.
 
     Raises RetrievalEvaluationError on any validation failure.
     """
-    from tests.semantic_ground_truth import (
-        SEMANTIC_GROUND_TRUTH,
-        SEMANTIC_GROUND_TRUTH_METADATA,
-        SEMANTIC_GROUND_TRUTH_SCHEMA_VERSION,
-        validate_semantic_ground_truth,
-    )
+    if ground_truth is None:
+        ground_truth = _default_ground_truth_bundle()
+
+    metadata = ground_truth.metadata
+    all_cases = ground_truth.cases
 
     # Validate Ground Truth structure
-    errors = validate_semantic_ground_truth(
-        SEMANTIC_GROUND_TRUTH_METADATA, SEMANTIC_GROUND_TRUTH, Path(chunks_path)
-    )
+    errors = ground_truth.validate_fn(metadata, all_cases, Path(chunks_path))
     if errors:
         raise RetrievalEvaluationError(
             f"Ground Truth validation failed with {len(errors)} errors: {errors[:3]}"
@@ -82,7 +175,7 @@ def validate_ground_truth_and_chunks(
     # Validate chunks hash
     with open(chunks_path, "rb") as f:
         actual_hash = hashlib.sha256(f.read()).hexdigest()
-    stored_hash = SEMANTIC_GROUND_TRUTH_METADATA["chunks_sha256"]
+    stored_hash = metadata["chunks_sha256"]
     if actual_hash != stored_hash:
         raise RetrievalEvaluationError(
             f"Chunks hash mismatch: stored={stored_hash}, actual={actual_hash}"
@@ -106,7 +199,6 @@ def validate_ground_truth_and_chunks(
             document_levels[doc_id] = level
 
     # Validate all required and optional document IDs exist
-    all_cases = SEMANTIC_GROUND_TRUTH
     for case in all_cases:
         case_id = case["id"]
         for doc_id in case.get("relevant_document_ids", []):
@@ -132,7 +224,7 @@ def validate_ground_truth_and_chunks(
                 f"Case {case_id}: no required relevant documents"
             )
 
-    return SEMANTIC_GROUND_TRUTH_METADATA, all_cases, document_levels
+    return metadata, all_cases, document_levels
 
 
 # ---------------------------------------------------------------------------
@@ -422,12 +514,20 @@ def evaluate_case(
     document_levels: Dict[str, str],
     k_values: Sequence[int] = DEFAULT_K_VALUES,
     candidate_chunk_depth: int = DEFAULT_CANDIDATE_CHUNK_DEPTH,
+    artifact_paths: Optional[ArtifactPaths] = None,
 ) -> Dict[str, Any]:
     """Evaluate a single case using the given retrieval function.
 
     Schema 2.0: For BM25 and Dense, retrieval is executed once at
     candidate_chunk_depth and K values are evaluated from prefixes.
     For Hybrid, hybrid_search is executed independently for every K.
+
+    `artifact_paths` selects a namespaced dataset's chunks/BM25/Chroma (see
+    src/artifacts.py). When given, it is forwarded to `retrieval_fn` as an
+    `artifact_paths` keyword argument. When `None` (the default), the
+    keyword is omitted entirely so existing test doubles and legacy
+    retrieval function signatures with no `artifact_paths` parameter keep
+    working unchanged.
 
     Returns a dict with runs_by_k containing K-specific evaluations.
     """
@@ -449,11 +549,24 @@ def evaluate_case(
     if method in ("bm25", "dense"):
         # BM25 / Dense: single retrieval at candidate depth
         if method == "bm25":
-            raw_results = retrieval_fn(query, k=candidate_chunk_depth)
+            if artifact_paths is not None:
+                raw_results = retrieval_fn(
+                    query, k=candidate_chunk_depth, artifact_paths=artifact_paths
+                )
+            else:
+                raw_results = retrieval_fn(query, k=candidate_chunk_depth)
         else:
-            raw_results = retrieval_fn(
-                query, k=candidate_chunk_depth, level_filter=None
-            )
+            if artifact_paths is not None:
+                raw_results = retrieval_fn(
+                    query,
+                    k=candidate_chunk_depth,
+                    level_filter=None,
+                    artifact_paths=artifact_paths,
+                )
+            else:
+                raw_results = retrieval_fn(
+                    query, k=candidate_chunk_depth, level_filter=None
+                )
 
         full_ranked_docs, full_diagnostics = build_document_ranking(
             raw_results, method, case_id
@@ -517,13 +630,23 @@ def evaluate_case(
         # Hybrid: independent execution for each K
         for k in k_values:
             k_str = str(k)
-            raw_results = retrieval_fn(
-                query,
-                k=k,
-                bm25_k=candidate_chunk_depth,
-                dense_k=candidate_chunk_depth,
-                level_filter=None,
-            )
+            if artifact_paths is not None:
+                raw_results = retrieval_fn(
+                    query,
+                    k=k,
+                    bm25_k=candidate_chunk_depth,
+                    dense_k=candidate_chunk_depth,
+                    level_filter=None,
+                    artifact_paths=artifact_paths,
+                )
+            else:
+                raw_results = retrieval_fn(
+                    query,
+                    k=k,
+                    bm25_k=candidate_chunk_depth,
+                    dense_k=candidate_chunk_depth,
+                    level_filter=None,
+                )
 
             ranked_docs, diagnostics = build_document_ranking(
                 raw_results, method, case_id
@@ -847,6 +970,99 @@ def temporary_chroma_copy(
                 )
 
 
+@dataclass(frozen=True)
+class TemporaryChromaArtifactPaths:
+    """
+    Evaluator-only, ArtifactPaths-compatible view used for Dense/Hybrid
+    retrieval while inside a `temporary_chroma_copy(...)` context.
+
+    Production `dense_search`/`hybrid_search` (see 06_retrieve_context.py)
+    take an `artifact_paths` argument and, when it is not None, read
+    `artifact_paths.chroma_dir` / `artifact_paths.chroma_collection_name`
+    directly -- ignoring the retrieval module's patched `CHROMA_DIR`
+    module attribute entirely. That means forwarding the real, selected
+    `ArtifactPaths` during namespaced evaluation would make Dense/Hybrid
+    open the *source* Chroma database directly, bypassing the temporary
+    copy `temporary_chroma_copy` exists to isolate reads to.
+
+    This view exists to close that gap without touching production
+    retrieval code or `src.artifacts.ArtifactPaths` globally: it delegates
+    every attribute to `base` (the real, selected dataset) except
+    `chroma_dir`, which is overridden to the temporary copy's path.
+    `chroma_collection_name` is deliberately NOT overridden -- it is
+    derived from competition_id/season_id only (see
+    `ArtifactPaths.chroma_collection_name`), so it is identical between
+    `base` and the temporary copy, and `temporary_chroma_copy` copies the
+    *entire* Chroma directory (all collections, under their real names),
+    so the copy still holds a collection under this exact name.
+
+    `bm25_index`/`chunks`/`match_facts` (needed by Hybrid's BM25 half and
+    by Hybrid's context-expansion helpers) are intentionally left pointing
+    at the real, selected dataset -- `temporary_chroma_copy` only ever
+    copies the Chroma directory, never BM25/chunks/match_facts, so those
+    must keep resolving to the originals.
+    """
+
+    base: ArtifactPaths
+    chroma_dir_override: Path
+
+    @property
+    def competition_id(self) -> int:
+        return self.base.competition_id
+
+    @property
+    def season_id(self) -> int:
+        return self.base.season_id
+
+    @property
+    def output_root(self) -> Path:
+        return self.base.output_root
+
+    @property
+    def root(self) -> Path:
+        return self.base.root
+
+    @property
+    def match_facts(self) -> Path:
+        return self.base.match_facts
+
+    @property
+    def documents(self) -> Path:
+        return self.base.documents
+
+    @property
+    def processed_documents(self) -> Path:
+        return self.base.processed_documents
+
+    @property
+    def chunks(self) -> Path:
+        return self.base.chunks
+
+    @property
+    def indices_dir(self) -> Path:
+        return self.base.indices_dir
+
+    @property
+    def bm25_index(self) -> Path:
+        return self.base.bm25_index
+
+    @property
+    def embeddings_dir(self) -> Path:
+        return self.base.embeddings_dir
+
+    @property
+    def embeddings_file(self) -> Path:
+        return self.base.embeddings_file
+
+    @property
+    def chroma_dir(self) -> Path:
+        return self.chroma_dir_override
+
+    @property
+    def chroma_collection_name(self) -> str:
+        return self.base.chroma_collection_name
+
+
 # ---------------------------------------------------------------------------
 # Method Evaluation
 # ---------------------------------------------------------------------------
@@ -859,8 +1075,14 @@ def evaluate_retrieval_method(
     document_levels: Dict[str, str],
     k_values: Sequence[int] = DEFAULT_K_VALUES,
     candidate_chunk_depth: int = DEFAULT_CANDIDATE_CHUNK_DEPTH,
+    artifact_paths: Optional[ArtifactPaths] = None,
 ) -> List[Dict[str, Any]]:
-    """Evaluate all cases for a single retrieval method."""
+    """Evaluate all cases for a single retrieval method.
+
+    `artifact_paths` selects a namespaced dataset (see src/artifacts.py)
+    and is forwarded to `evaluate_case` for every case. Defaults to `None`
+    -- unchanged legacy WC2022 behavior.
+    """
     if method not in SUPPORTED_METHODS:
         raise RetrievalEvaluationError(
             f"Unsupported method: {method}. Must be one of {SUPPORTED_METHODS}"
@@ -882,6 +1104,7 @@ def evaluate_retrieval_method(
             document_levels=document_levels,
             k_values=k_values,
             candidate_chunk_depth=candidate_chunk_depth,
+            artifact_paths=artifact_paths,
         )
         results.append(case_result)
 
@@ -936,8 +1159,37 @@ def run_retrieval_baseline(
     k_values: Sequence[int] = DEFAULT_K_VALUES,
     candidate_chunk_depth: int = DEFAULT_CANDIDATE_CHUNK_DEPTH,
     project_root: str = ".",
+    artifact_paths: Optional[ArtifactPaths] = None,
+    ground_truth: Optional[GroundTruthBundle] = None,
 ) -> Dict[str, Any]:
     """Run the full retrieval baseline evaluation.
+
+    `artifact_paths` selects a namespaced dataset's chunks.json and Chroma
+    directory (see src/artifacts.py) instead of the legacy
+    `output/chunks.json` / `output/chroma_db` flat layout, and is forwarded
+    to every retrieval call. Defaults to `None` -- unchanged legacy WC2022
+    artifact locations.
+
+    `ground_truth` selects the Ground Truth benchmark to validate/score
+    against (see `GroundTruthBundle`). Defaults to `None`, which resolves to
+    the default WC2022 Semantic Ground Truth -- unchanged legacy behavior.
+
+    Dataset/benchmark identity is validated before any retrieval happens
+    (see `_ensure_ground_truth_matches_artifact_paths`):
+
+    - `artifact_paths=None` -- no identity check; legacy WC2022 evaluation
+      is preserved exactly.
+    - `artifact_paths` selects the same (competition_id, season_id) the
+      *effective* benchmark's metadata declares (e.g. a namespaced WC2022
+      selection, competition_id=43/season_id=106, against the default
+      WC2022 bundle) -- allowed to proceed. The chunks SHA-256 check in
+      `validate_ground_truth_and_chunks` still determines whether that
+      namespaced snapshot actually matches the benchmark.
+    - `artifact_paths` selects a different identity than the effective
+      benchmark declares -- refused with a clear error before evaluation,
+      whether the benchmark came from the WC2022 default (no
+      `ground_truth` supplied) or from an explicitly mismatched
+      `GroundTruthBundle`.
 
     Returns a JSON-serializable result dict.
     """
@@ -945,9 +1197,29 @@ def run_retrieval_baseline(
     k_values = tuple(sorted(k_values))
     methods = tuple(methods)
 
+    resolved_ground_truth = (
+        ground_truth if ground_truth is not None else _default_ground_truth_bundle()
+    )
+
+    if artifact_paths is not None:
+        _ensure_ground_truth_matches_artifact_paths(
+            resolved_ground_truth.metadata,
+            artifact_paths,
+            ground_truth_was_explicit=ground_truth is not None,
+        )
+
+    # Resolve chunks/Chroma locations for the selected dataset
+    if artifact_paths is not None:
+        chunks_path = str(artifact_paths.chunks)
+        chroma_dir = str(artifact_paths.chroma_dir)
+    else:
+        chunks_path = os.path.join(project_root, "output", "chunks.json")
+        chroma_dir = os.path.join(project_root, "output", "chroma_db")
+
     # Validate Ground Truth and chunks
     metadata, cases, document_levels = validate_ground_truth_and_chunks(
-        chunks_path=os.path.join(project_root, "output", "chunks.json")
+        chunks_path=chunks_path,
+        ground_truth=resolved_ground_truth,
     )
 
     _validate_baseline_args(methods, k_values, candidate_chunk_depth, cases)
@@ -960,7 +1232,6 @@ def run_retrieval_baseline(
     non_chroma_methods = [m for m in methods if m not in ("dense", "hybrid")]
 
     # Original Chroma hash
-    chroma_dir = os.path.join(project_root, "output", "chroma_db")
     chroma_sqlite = os.path.join(chroma_dir, "chroma.sqlite3")
     original_chroma_hash = None
     if os.path.exists(chroma_sqlite):
@@ -971,6 +1242,7 @@ def run_retrieval_baseline(
 
     def _run_methods(
         method_list: List[str],
+        methods_artifact_paths: Optional[ArtifactPaths],
     ) -> Dict[str, Any]:
         results = {}
         for m in method_list:
@@ -981,6 +1253,7 @@ def run_retrieval_baseline(
                 document_levels=document_levels,
                 k_values=k_values,
                 candidate_chunk_depth=candidate_chunk_depth,
+                artifact_paths=methods_artifact_paths,
             )
             overall = aggregate_case_results(case_results, k_values)
             by_group = aggregate_by_group(case_results, k_values)
@@ -992,16 +1265,30 @@ def run_retrieval_baseline(
         return results
 
     try:
-        # BM25-only methods (no Chroma needed)
+        # BM25-only methods (no Chroma needed) -- the real, selected
+        # artifact_paths (no temp copy involved; BM25 never touches Chroma).
         if non_chroma_methods:
             reset_retrieval_caches(retrieval_module)
-            all_method_results.update(_run_methods(non_chroma_methods))
+            all_method_results.update(_run_methods(non_chroma_methods, artifact_paths))
             reset_retrieval_caches(retrieval_module)
 
-        # Chroma methods (use temporary copy)
+        # Chroma methods (use temporary copy). Dense/Hybrid must never open
+        # the source Chroma directly -- see TemporaryChromaArtifactPaths.
         if chroma_methods:
-            with temporary_chroma_copy(chroma_dir, retrieval_module):
-                all_method_results.update(_run_methods(chroma_methods))
+            with temporary_chroma_copy(chroma_dir, retrieval_module) as tmp_chroma:
+                if artifact_paths is not None:
+                    chroma_methods_artifact_paths = TemporaryChromaArtifactPaths(
+                        base=artifact_paths,
+                        chroma_dir_override=Path(tmp_chroma),
+                    )
+                else:
+                    # Legacy: no artifact_paths object at all -- Dense/Hybrid
+                    # rely on the module-level CHROMA_DIR patch that
+                    # temporary_chroma_copy already applies.
+                    chroma_methods_artifact_paths = None
+                all_method_results.update(
+                    _run_methods(chroma_methods, chroma_methods_artifact_paths)
+                )
     finally:
         reset_retrieval_caches(retrieval_module)
 
@@ -1081,6 +1368,24 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Print indented JSON",
     )
+    parser.add_argument(
+        "--competition-id",
+        type=int,
+        help="Competition ID of a namespaced dataset to evaluate "
+        "(see src/artifacts.py). Must be given together with --season-id.",
+    )
+    parser.add_argument(
+        "--season-id",
+        type=int,
+        help="Season ID of a namespaced dataset to evaluate "
+        "(see src/artifacts.py). Must be given together with --competition-id.",
+    )
+    parser.add_argument(
+        "--namespaced",
+        action="store_true",
+        help="Use the namespaced artifact layout for the legacy default "
+        "dataset instead of the flat output/ layout",
+    )
     return parser.parse_args(argv)
 
 
@@ -1106,11 +1411,30 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         return 1
 
+    if (args.competition_id is None) != (args.season_id is None):
+        print(
+            "Error: --competition-id and --season-id must be provided together",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.competition_id is None:
+        artifact_paths = resolve_runtime_artifact_paths(
+            legacy_default=not args.namespaced
+        )
+    else:
+        artifact_paths = resolve_runtime_artifact_paths(
+            args.competition_id,
+            args.season_id,
+            legacy_default=not args.namespaced,
+        )
+
     try:
         result = run_retrieval_baseline(
             methods=tuple(args.methods),
             k_values=tuple(sorted(args.k_values)),
             candidate_chunk_depth=args.candidate_chunk_depth,
+            artifact_paths=artifact_paths,
         )
     except RetrievalEvaluationError as e:
         print(f"Error: {e}", file=sys.stderr)
