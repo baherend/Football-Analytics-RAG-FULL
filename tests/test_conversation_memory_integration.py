@@ -104,10 +104,10 @@ def test_answer_question_surfaces_memory_as_labeled_context_not_authoritative(mo
 
     real_build_prompt = prompting.build_prompt
 
-    def spy_build_prompt(question, context):
+    def spy_build_prompt(question, context, has_structured=False):
         captured["question"] = question
         captured["context"] = context
-        return real_build_prompt(question, context)
+        return real_build_prompt(question, context, has_structured=has_structured)
 
     monkeypatch.setattr(prompting, "build_prompt", spy_build_prompt)
 

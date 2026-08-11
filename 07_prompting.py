@@ -499,25 +499,55 @@ def answer_question(question: str, api_key: str | None = None,
     retrieval_query = resolve_pronoun_references(question, relevant_turns)
 
     result = route_and_execute(retrieval_query, artifact_paths=artifact_paths)
-    context = result.context
+    sr = getattr(result, "structured_result", None)
+    has_structured = bool(
+        sr and getattr(sr, "status", None) in ("resolved", "partial") and getattr(sr, "explanation", None)
+    )
     sources = result.semantic_chunks or []
+
+    if has_structured:
+        # Mirror chat.py::process_query()'s context assembly: present the
+        # structured fact as authoritative directly from `sr`, rather than
+        # `result.context` -- for a hybrid route, execute_route() overwrites
+        # `context` with semantic-only text after computing it, so the
+        # structured explanation would otherwise be silently dropped.
+        context = (
+            "## Authoritative Data (Verified from Match Facts)\n\n"
+            "The following numbers are VERIFIED and must be used EXACTLY:\n\n"
+            + sr.explanation
+        )
+        if result.semantic_chunks:
+            context += "\n\n" + format_context_for_prompt(result.semantic_chunks)
+    else:
+        context = result.context
 
     conversation_context = format_conversation_context(relevant_turns)
     full_context = f"{conversation_context}\n\n{context}" if conversation_context else context
 
-    if is_unsupported_query(
-        getattr(result, "structured_result", None),
-        getattr(result, "answerability", None),
-    ):
+    if is_unsupported_query(sr, getattr(result, "answerability", None)):
         answer = INSUFFICIENT_CONTEXT_MESSAGE
     else:
-        prompt = build_prompt(question, full_context)
+        prompt = build_prompt(question, full_context, has_structured=has_structured)
 
         key = api_key or GROQ_API_KEY
         if not key:
             return "Missing GROQ_API_KEY. Please set it in Streamlit secrets or environment.", sources
 
         answer = ask_groq(prompt, api_key=key, model=model)
+
+        if has_structured:
+            try:
+                validation = validate_answer(
+                    llm_answer=answer,
+                    structured_explanation=sr.explanation,
+                    structured_value=sr.aggregated_value,
+                    structured_metric=getattr(sr.query, "metric", None),
+                )
+                if not validation.is_valid:
+                    answer = validation.corrected_answer or answer
+            except Exception:
+                # Validation is best-effort -- don't break the pipeline.
+                pass
 
     if memory is not None:
         memory.add_turn(artifact_paths, question, answer)

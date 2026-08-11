@@ -329,3 +329,161 @@ def test_retrieval_build_context_uses_source_labels_with_chunk_identity():
     assert "L2-match-3869685-chunk-0" in context
     assert "L2-match-3869685-chunk-1" in context
     assert "[Document 1" not in context
+
+
+def test_answer_question_corrects_structured_numeric_contradiction(monkeypatch):
+    """
+    Structured generation validation parity: chat.py::process_query() already
+    runs validate_answer() against a usable structured result (status
+    "resolved"/"partial" with an explanation) and swaps in the corrected
+    answer on contradiction. answer_question() -- the Streamlit production
+    path -- never calls validate_answer() at all, so a generated answer that
+    numerically contradicts verified structured data reaches the user
+    unchanged even though the exact same authoritative fact was available.
+    """
+    prompting = import_module("07_prompting")
+    retrieval = import_module("06_retrieve_context")
+    selected = ArtifactPaths(2, 27)
+
+    structured_result = SimpleNamespace(
+        status="resolved",
+        explanation="Jamie Vardy's total goals is 24.",
+        aggregated_value=24,
+        query=SimpleNamespace(metric="goals"),
+    )
+    # A usable structured result must never be blocked by the Step 1 gate,
+    # regardless of semantic answerability -- give it a harmless status so
+    # this test can't accidentally pass for the wrong reason (the gate
+    # refusing before generation rather than validation correcting it).
+    answerable = AnswerabilityAssessment(
+        status="answerable", matched_terms=("goals",), missing_terms=(),
+    )
+
+    monkeypatch.setattr(
+        retrieval,
+        "route_and_execute",
+        lambda q, artifact_paths=None: SimpleNamespace(
+            structured_result=structured_result,
+            semantic_chunks=[],
+            context="Jamie Vardy's total goals is 24.",
+            answerability=answerable,
+        ),
+    )
+    monkeypatch.setattr(
+        prompting,
+        "ask_groq",
+        lambda *a, **kw: "Jamie Vardy scored 20 goals.",
+    )
+
+    answer, _ = prompting.answer_question(
+        "How many goals did Jamie Vardy score?",
+        api_key="test-key",
+        artifact_paths=selected,
+    )
+
+    assert "20" not in answer, (
+        "answer_question() returned a generated answer that contradicts "
+        "verified structured data (Jamie Vardy's actual total is 24 goals) "
+        "unchanged -- the Streamlit generation path never runs "
+        "validate_answer(), unlike chat.py::process_query()."
+    )
+    assert "24" in answer
+
+
+def test_answer_question_leaves_correct_structured_answer_unchanged(monkeypatch):
+    """
+    New answer_question() validation wiring must be a no-op when the
+    generated answer already agrees with the structured fact -- only a
+    detected contradiction should ever alter the returned text.
+    """
+    prompting = import_module("07_prompting")
+    retrieval = import_module("06_retrieve_context")
+    selected = ArtifactPaths(2, 27)
+
+    structured_result = SimpleNamespace(
+        status="resolved",
+        explanation="Jamie Vardy's total goals is 24.",
+        aggregated_value=24,
+        query=SimpleNamespace(metric="goals"),
+    )
+    answerable = AnswerabilityAssessment(
+        status="answerable", matched_terms=("goals",), missing_terms=(),
+    )
+
+    monkeypatch.setattr(
+        retrieval,
+        "route_and_execute",
+        lambda q, artifact_paths=None: SimpleNamespace(
+            structured_result=structured_result,
+            semantic_chunks=[],
+            context="Jamie Vardy's total goals is 24.",
+            answerability=answerable,
+        ),
+    )
+    monkeypatch.setattr(
+        prompting,
+        "ask_groq",
+        lambda *a, **kw: "Jamie Vardy scored 24 goals.",
+    )
+
+    answer, _ = prompting.answer_question(
+        "How many goals did Jamie Vardy score?",
+        api_key="test-key",
+        artifact_paths=selected,
+    )
+
+    assert answer == "Jamie Vardy scored 24 goals."
+
+
+def test_answer_question_pure_semantic_skips_structured_validation(monkeypatch):
+    """
+    Structured boundary: a pure semantic query (structured_result=None) must
+    never be routed through structured contradiction correction -- only a
+    usable structured result should trigger validate_answer() at all.
+    """
+    prompting = import_module("07_prompting")
+    retrieval = import_module("06_retrieve_context")
+    selected = ArtifactPaths(2, 27)
+
+    answerable = AnswerabilityAssessment(
+        status="answerable", matched_terms=("goals",), missing_terms=(),
+    )
+
+    monkeypatch.setattr(
+        retrieval,
+        "route_and_execute",
+        lambda q, artifact_paths=None: SimpleNamespace(
+            structured_result=None,
+            semantic_chunks=[{
+                "chunk_id": "DOC-1-part-0",
+                "text": "The match finished 3-2 after a late winner.",
+                "metadata": {"document_id": "DOC-1", "level": "1", "match_id": "8658"},
+            }],
+            context="The match finished 3-2 after a late winner.",
+            answerability=answerable,
+        ),
+    )
+    monkeypatch.setattr(
+        prompting,
+        "ask_groq",
+        lambda *a, **kw: "The match finished 3-2 after a late winner.",
+    )
+
+    validate_calls = []
+    monkeypatch.setattr(
+        prompting,
+        "validate_answer",
+        lambda **kw: validate_calls.append(kw),
+    )
+
+    answer, _ = prompting.answer_question(
+        "What happened in the match?",
+        api_key="test-key",
+        artifact_paths=selected,
+    )
+
+    assert not validate_calls, (
+        "answer_question() ran structured contradiction validation for a "
+        "pure semantic query with no structured_result."
+    )
+    assert answer == "The match finished 3-2 after a late winner."
