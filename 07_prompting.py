@@ -93,6 +93,32 @@ Rules:
 5. Cite specific matches, players, statistics, and [Source N] references when available."""
 
 
+# Canonical refusal text -- matches the wording both system prompts already
+# instruct the LLM to produce when evidence is insufficient (rule 2/4 above).
+INSUFFICIENT_CONTEXT_MESSAGE = "I don't have enough data to answer this question."
+
+
+def is_unsupported_query(structured_result, answerability) -> bool:
+    """
+    True when there is no usable authoritative structured result AND the
+    routed semantic evidence was explicitly assessed "unanswerable".
+
+    A usable structured result (status "resolved"/"partial" with an
+    explanation) always takes precedence -- semantic-only answerability
+    must never veto a valid structured answer.
+    """
+    has_structured = bool(
+        structured_result
+        and getattr(structured_result, "status", None) in ("resolved", "partial")
+        and getattr(structured_result, "explanation", None)
+    )
+    return (
+        not has_structured
+        and answerability is not None
+        and getattr(answerability, "status", None) == "unanswerable"
+    )
+
+
 def build_prompt(
     question: str,
     context: str,
@@ -477,13 +503,19 @@ def answer_question(question: str, api_key: str | None = None,
     conversation_context = format_conversation_context(relevant_turns)
     full_context = f"{conversation_context}\n\n{context}" if conversation_context else context
 
-    prompt = build_prompt(question, full_context)
+    if is_unsupported_query(
+        getattr(result, "structured_result", None),
+        getattr(result, "answerability", None),
+    ):
+        answer = INSUFFICIENT_CONTEXT_MESSAGE
+    else:
+        prompt = build_prompt(question, full_context)
 
-    key = api_key or GROQ_API_KEY
-    if not key:
-        return "Missing GROQ_API_KEY. Please set it in Streamlit secrets or environment.", sources
+        key = api_key or GROQ_API_KEY
+        if not key:
+            return "Missing GROQ_API_KEY. Please set it in Streamlit secrets or environment.", sources
 
-    answer = ask_groq(prompt, api_key=key, model=model)
+        answer = ask_groq(prompt, api_key=key, model=model)
 
     if memory is not None:
         memory.add_turn(artifact_paths, question, answer)

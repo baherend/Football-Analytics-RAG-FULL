@@ -192,10 +192,13 @@ def process_query(question: str) -> str:
 
     # Step 5: Generate answer
     state.history.append({"role": "user", "content": question})
-    try:
-        answer = prompting_mod.generate_answer(prompt, model=state.model)
-    except Exception as e:
-        answer = f"[LLM Error: {e}]\n\nRetrieved context ({len(context)} chars, showing first 2000):\n{context[:2000]}..."
+    if prompting_mod.is_unsupported_query(sr, getattr(result, "answerability", None)):
+        answer = prompting_mod.INSUFFICIENT_CONTEXT_MESSAGE
+    else:
+        try:
+            answer = prompting_mod.generate_answer(prompt, model=state.model)
+        except Exception as e:
+            answer = f"[LLM Error: {e}]\n\nRetrieved context ({len(context)} chars, showing first 2000):\n{context[:2000]}..."
 
     # Step 6: Validate answer against structured facts
     if sr and sr.status in ("resolved", "partial") and sr.explanation:
