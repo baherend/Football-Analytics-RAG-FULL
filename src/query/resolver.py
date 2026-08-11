@@ -293,6 +293,43 @@ def _aggregate_period_aware(
     if not records:
         return None
 
+    spec = REGISTERED_METRICS.get(metric)
+
+    # Ratios aggregated across multiple records must be recomputed from the
+    # combined numerator/denominator. Averaging per-record percentages gives
+    # each record equal weight regardless of its denominator.
+    if (
+        spec is not None
+        and spec.kind == MetricKind.DERIVED_RATIO
+        and aggregation in ("avg", "mean")
+    ):
+        numerator_total = 0
+        denominator_total = 0
+
+        for record in records:
+            by_period = record.get("by_period", {})
+            if periods is not None and by_period:
+                blocks = [
+                    by_period[str(period)]
+                    for period in periods
+                    if str(period) in by_period
+                ]
+            else:
+                blocks = [record]
+
+            numerator_total += sum(
+                block.get(spec.numerator, 0) or 0 for block in blocks
+            )
+            denominator_total += sum(
+                block.get(spec.denominator, 0) or 0 for block in blocks
+            )
+
+        return (
+            numerator_total / denominator_total * 100.0
+            if denominator_total
+            else None
+        )
+
     values = []
     for record in records:
         value, _ = _read_metric_from_record(record, metric, periods)

@@ -603,3 +603,91 @@ def test_period_filter_accepts_numeric_string_and_slices_by_period():
     assert result.status == "resolved"
     assert result.aggregated_value == 1
     assert "period" not in result.dropped_filters
+
+
+def test_derived_ratio_aggregates_components_before_division():
+    """Season-level derived ratios must use summed numerator/denominator."""
+    data = {
+        "player_match_facts": [
+            {
+                "player_id": 1,
+                "player_name": "Test Player",
+                "team_name": "Test FC",
+                "match_id": 10,
+                "passes_completed": 1,
+                "passes_attempted": 1,
+            },
+            {
+                "player_id": 1,
+                "player_name": "Test Player",
+                "team_name": "Test FC",
+                "match_id": 11,
+                "passes_completed": 0,
+                "passes_attempted": 9,
+            },
+        ],
+        "match_facts": [],
+        "team_match_facts": [],
+    }
+
+    q = StructuredQuery(
+        intent="numeric",
+        entity="player",
+        metric="pass_completion_pct",
+        aggregation="avg",
+        entity_name="Test Player",
+    )
+
+    result = resolve(q, data)
+
+    assert result.status == "resolved"
+    assert result.aggregated_value == 10.0
+
+
+def test_superlative_derived_ratio_ranks_by_combined_components():
+    """Superlative ratio ranking must use combined numerator/denominator."""
+    data = {
+        "player_match_facts": [
+            {
+                "player_id": 1,
+                "player_name": "Player A",
+                "team_name": "Test FC",
+                "match_id": 1,
+                "passes_completed": 1,
+                "passes_attempted": 1,
+            },
+            {
+                "player_id": 1,
+                "player_name": "Player A",
+                "team_name": "Test FC",
+                "match_id": 2,
+                "passes_completed": 0,
+                "passes_attempted": 9,
+            },
+            {
+                "player_id": 2,
+                "player_name": "Player B",
+                "team_name": "Test FC",
+                "match_id": 3,
+                "passes_completed": 6,
+                "passes_attempted": 10,
+            },
+        ],
+        "match_facts": [],
+        "team_match_facts": [],
+    }
+
+    q = StructuredQuery(
+        intent="superlative",
+        entity="player",
+        metric="pass_completion_pct",
+        aggregation="max",
+        limit=1,
+        sort_order="desc",
+    )
+
+    result = resolve(q, data)
+
+    assert result.status == "resolved"
+    assert result.data[0]["player_name"] == "Player B"
+    assert result.aggregated_value == 60.0
