@@ -472,6 +472,108 @@ def test_comparison_result_outcome_safety_cases():
         )
 
 
+def test_comparison_result_is_not_resolved_when_one_entity_has_no_value(monkeypatch):
+    """
+    Comparison Engine Step 2G: ComparisonResult.status is currently
+    hardcoded to "resolved" in execute_route()'s comparison branch
+    whenever entity_results is non-empty, regardless of whether either
+    entity actually produced a usable aggregated_value. Step 2F's outcome
+    derivation already correctly refuses to fabricate a winner when a
+    value is missing (difference/outcome stay None) -- but the overall
+    status still claims full success, which is misleading to any
+    downstream caller (including a future Faithfulness gate) that only
+    checks `.status in ("resolved", "partial")` to decide whether
+    structured evidence is usable.
+
+    Existing resolver semantics (src/query/resolver.py, confirmed by
+    tests/test_structured.py::test_period_filter_on_minutes_is_partial
+    etc.): "resolved" means a full, unqualified aggregated_value;
+    "partial" means a real aggregated_value exists but scope was
+    reduced (dropped filters); "empty" means no usable aggregated_value
+    at all. When only one of two comparison entities resolves, the
+    comparison as a whole has *some* usable evidence but not a complete
+    two-sided comparison -- "partial" is the correct combined status,
+    not "resolved".
+    """
+    def fake_structured_resolve(query, data_path=None, stage_taxonomy=None):
+        if query.entity_name == "Entity A":
+            return SimpleNamespace(
+                status="resolved", explanation="Entity A: 10.",
+                aggregated_value=10, data=[], dropped_filters=[],
+            )
+        return SimpleNamespace(
+            status="empty", explanation="No data available for Entity B.",
+            aggregated_value=None, data=[], dropped_filters=[],
+        )
+
+    monkeypatch.setattr(router, "structured_resolve", fake_structured_resolve)
+
+    route = router.Route(
+        path="hybrid",
+        confidence=0.9,
+        reason="test",
+        semantic_query="Compare Entity A and Entity B",
+    )
+    result = router.execute_route(route, semantic_k=0)
+    sr = result.structured_result
+
+    assert sr.status != "resolved", (
+        f"comparison structured_result.status = {sr.status!r} for a comparison where "
+        "Entity B has no usable value -- must not be reported as fully 'resolved'."
+    )
+    assert sr.difference is None
+    assert sr.outcome is None
+
+
+def test_comparison_result_status_matrix(monkeypatch):
+    """
+    Comparison Engine Step 2G regression: the smallest meaningful status
+    matrix, covering both value-presence combinations and the partial-
+    input policy -- the combined status must never claim a stronger
+    certainty level than its own underlying per-entity StructuredResult
+    objects (src/query/resolver.py's resolved/partial/empty semantics).
+    """
+    cases = [
+        # (entity_a: (status, value), entity_b: (status, value), expected combined status)
+        (("resolved", 25), ("resolved", 24), "resolved"),
+        (("resolved", 10), ("empty", None), "partial"),
+        (("empty", None), ("resolved", 10), "partial"),
+        (("empty", None), ("empty", None), "empty"),
+        (("partial", 10), ("resolved", 20), "partial"),
+        (("partial", 10), ("partial", 20), "partial"),
+    ]
+    for (status_a, value_a), (status_b, value_b), expected_status in cases:
+        def fake_structured_resolve(
+            query, data_path=None, stage_taxonomy=None,
+            _status_a=status_a, _value_a=value_a, _status_b=status_b, _value_b=value_b,
+        ):
+            if query.entity_name == "Entity A":
+                return SimpleNamespace(
+                    status=_status_a, explanation="Entity A: ...",
+                    aggregated_value=_value_a, data=[], dropped_filters=[],
+                )
+            return SimpleNamespace(
+                status=_status_b, explanation="Entity B: ...",
+                aggregated_value=_value_b, data=[], dropped_filters=[],
+            )
+
+        monkeypatch.setattr(router, "structured_resolve", fake_structured_resolve)
+
+        route = router.Route(
+            path="hybrid",
+            confidence=0.9,
+            reason="test",
+            semantic_query="Compare Entity A and Entity B",
+        )
+        result = router.execute_route(route, semantic_k=0)
+        sr = result.structured_result
+
+        assert sr.status == expected_status, (
+            f"A=(status={status_a!r}, value={value_a!r}), B=(status={status_b!r}, value={value_b!r}): "
+            f"combined status = {sr.status!r}, expected {expected_status!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Tests: Retrieval post-processing regressions
 # ---------------------------------------------------------------------------

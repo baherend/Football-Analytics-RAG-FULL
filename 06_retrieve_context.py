@@ -1743,8 +1743,25 @@ def execute_route(
                 # on StructuredResult.aggregated_value.
                 values.append(ComparisonValue(entity_name=name, value=result.aggregated_value))
 
+            # Derive the combined status from the two original StructuredResult
+            # objects -- never a hardcoded "resolved" -- mirroring the
+            # resolver's own resolved/partial/empty meaning (see
+            # src/query/resolver.py): "resolved" only when every requested
+            # entity produced an unqualified value; "partial" when at least
+            # one usable value exists but the comparison isn't fully honored
+            # (an entity is missing, or any entity's own result was itself
+            # "partial"); "empty" when no entity produced a usable value.
+            usable_count = sum(1 for _, result in entity_results if result.aggregated_value is not None)
+            has_partial_result = any(result.status == "partial" for _, result in entity_results)
+            if usable_count == 0:
+                comparison_status = "empty"
+            elif usable_count < len(comparison_entities) or has_partial_result:
+                comparison_status = "partial"
+            else:
+                comparison_status = "resolved"
+
             structured_result = ComparisonResult(
-                status="resolved",
+                status=comparison_status,
                 metric=comparison_metric,
                 values=values,
                 explanation=" | ".join(parts),
