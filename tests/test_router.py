@@ -314,6 +314,26 @@ def test_comparison_unsupported_metric_does_not_silently_become_goals(monkeypatc
     )
 
 
+def test_comparison_entity_extraction_excludes_trailing_metric_clause():
+    """
+    Comparison Engine Step 2C: _detect_comparison()'s first pattern
+    ("compare X and Y ...") only stops entity B's lazy capture at " in",
+    end-of-string, or "?" (see COMPARISON_PATTERNS[0] and the existing "in
+    goals, assists, ..." handling below it). A "by <metric>" trailing
+    clause -- e.g. "Compare Harry Kane and Jamie Vardy by goals." -- has
+    no terminator the pattern recognizes, so the lazy group swallows the
+    whole trailing clause into entity B. Entity extraction must stay
+    independent of metric extraction (_detect_comparison_metric() already
+    correctly identifies "goals" for this query on its own).
+    """
+    question = "Compare Harry Kane and Jamie Vardy by goals."
+    result = router._detect_comparison(question)
+    assert result == ["Harry Kane", "Jamie Vardy"], (
+        f"_detect_comparison({question!r}) = {result}, expected the trailing "
+        "'by goals' metric clause to be excluded from entity B."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tests: Retrieval post-processing regressions
 # ---------------------------------------------------------------------------

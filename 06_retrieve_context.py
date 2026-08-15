@@ -1146,7 +1146,7 @@ def _extract_opponent_filter(query: str) -> Filter | None:
 
 # Comparison detection patterns (router version)
 COMPARISON_PATTERNS = [
-    r"compare\s+(.+?)\s+and\s+(.+?)(?:\s+in\b|\s*$|\s*\?)",
+    r"compare\s+(.+?)\s+and\s+(.+?)(?:\s+in\b|\s+by\b|\s*$|\s*\?)",
     r"who\s+(?:performed|played|did)\s+better[,.]?\s*(.+?)\s+or\s+(.+?)(?:\s*$|\s*\?)",
     r"(\w+)\s+vs\.?\s+(\w+)",
     r"(\w+)\s+versus\s+(\w+)",
@@ -1196,15 +1196,20 @@ def _detect_comparison_metric(query: str) -> str:
     - No metric phrase is mentioned at all (e.g. "Compare Messi and
       Mbappé's performance") -- falls back to "goals", the long-standing
       default for genuinely metric-less comparisons.
-    - A metric phrase IS mentioned ("who <verb> more <metric>, A or B")
-      but doesn't resolve (e.g. "corners") -- the raw, unresolved phrase
-      is returned unchanged, exactly like parse_structured_query()'s
-      "how many <metric> did <player> have" pattern already does when
-      resolve_metric() fails. structured_resolve() then rejects it via
-      validate_query(), producing status="empty" for that entity -- it
-      must never be silently swapped for "goals".
+    - A metric phrase IS mentioned -- "who <verb> more <metric>, A or B"
+      or "compare A and B by <metric>" -- but doesn't resolve (e.g.
+      "corners") -- the raw, unresolved phrase is returned unchanged,
+      exactly like parse_structured_query()'s "how many <metric> did
+      <player> have" pattern already does when resolve_metric() fails.
+      structured_resolve() then rejects it via validate_query(),
+      producing status="empty" for that entity -- it must never be
+      silently swapped for "goals".
     """
-    match = re.search(r"who\s+\w+\s+more\s+([\w\s]+?),", query.lower())
+    query_lower = query.lower()
+    match = (
+        re.search(r"who\s+\w+\s+more\s+([\w\s]+?),", query_lower)
+        or re.search(r"\bby\s+([\w\s]+?)[.?]?\s*$", query_lower)
+    )
     if not match:
         return "goals"
 
