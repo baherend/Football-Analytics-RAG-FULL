@@ -137,13 +137,40 @@ class ComparisonResult:
             the other empty) is not yet distinguished here -- see
             06_retrieve_context.py for current handling.
 
-    Winner/tie and the numeric difference are intentionally NOT computed
-    here -- they are derivable later from `values` once needed.
+    `difference` and `outcome` are derived automatically (__post_init__)
+    from `values`, computed only from each entity's already-resolved
+    aggregated_value -- never from explanation text, never via
+    generation:
+
+        difference -- abs(value_a - value_b): a non-negative magnitude.
+            Direction is carried separately by `outcome`.
+        outcome -- "entity_a_higher" | "entity_b_higher" | "tie" | None.
+            `values[0]` is entity A, `values[1]` is entity B (the order
+            the query mentioned them in). None means the outcome could
+            not be determined -- fewer than two values, or either value
+            is None/unresolved -- and must never be read as a fabricated
+            winner or as a tie.
     """
     status: str  # "resolved" (see docstring for current status semantics)
     metric: str
     values: list[ComparisonValue] = field(default_factory=list)
     explanation: str = ""  # human-readable explanation
+    difference: float | int | None = field(init=False, default=None)
+    outcome: str | None = field(init=False, default=None)
+
+    def __post_init__(self) -> None:
+        if len(self.values) != 2:
+            return
+        value_a, value_b = self.values[0].value, self.values[1].value
+        if value_a is None or value_b is None:
+            return
+        self.difference = abs(value_a - value_b)
+        if value_a > value_b:
+            self.outcome = "entity_a_higher"
+        elif value_b > value_a:
+            self.outcome = "entity_b_higher"
+        else:
+            self.outcome = "tie"
 
     def to_dict(self) -> dict:
         return {
@@ -151,6 +178,8 @@ class ComparisonResult:
             "metric": self.metric,
             "values": [v.to_dict() for v in self.values],
             "explanation": self.explanation,
+            "difference": self.difference,
+            "outcome": self.outcome,
         }
 
 

@@ -386,6 +386,92 @@ def test_comparison_result_preserves_both_authoritative_values(monkeypatch):
     )
 
 
+def test_comparison_result_computes_deterministic_outcome(monkeypatch):
+    """
+    Comparison Engine Step 2F: ComparisonResult already preserves both
+    entities' authoritative aggregated_value structurally (Step 2E,
+    `.values`), but does not yet expose a deterministic difference or a
+    machine-readable winner/tie outcome -- neither field exists yet, so a
+    caller would have to recompute it from `.values` itself (or, worse,
+    ask an LLM to eyeball two numbers in a prompt). The comparison result
+    itself must carry this deterministic outcome, computed only from the
+    already-resolved structured numeric values -- never from explanation
+    prose, never via generation.
+    """
+    def fake_structured_resolve(query, data_path=None, stage_taxonomy=None):
+        value = 25 if query.entity_name == "Harry Kane" else 24
+        return SimpleNamespace(
+            status="resolved",
+            explanation=f"{query.entity_name}'s total goals is {value}.",
+            aggregated_value=value,
+            data=[],
+            dropped_filters=[],
+        )
+
+    monkeypatch.setattr(router, "structured_resolve", fake_structured_resolve)
+
+    route = router.Route(
+        path="hybrid",
+        confidence=0.9,
+        reason="test",
+        semantic_query="Who scored more goals, Harry Kane or Jamie Vardy?",
+    )
+    result = router.execute_route(route, semantic_k=0)
+    sr = result.structured_result
+
+    assert sr.difference == 1, (
+        f"comparison structured_result.difference = {sr.difference!r}, expected the "
+        "non-negative magnitude |25 - 24| = 1, computed only from the already-"
+        "resolved structured values."
+    )
+    assert sr.outcome == "entity_a_higher", (
+        f"comparison structured_result.outcome = {sr.outcome!r}, expected "
+        "'entity_a_higher' since Harry Kane (values[0] = 25) is greater than "
+        "Jamie Vardy (values[1] = 24)."
+    )
+
+
+def test_comparison_result_outcome_safety_cases():
+    """
+    Comparison Engine Step 2F regression: covers the outcome-derivation
+    safety cases in one pass, constructing ComparisonResult directly
+    (the same construction execute_route() already performs from
+    structured_resolve() output) since the derivation itself is pure
+    logic over already-resolved values -- no execute_route()/monkeypatch
+    machinery needed to exercise it further per case.
+
+    - A > B: guards the "first entity always wins" degenerate case.
+    - B > A: proves direction isn't hardcoded to entity A.
+    - A == B: tie, difference = 0.
+    - A present, B missing: no fabricated winner, no invalid None
+      comparison -- both difference and outcome stay None.
+    """
+    cases = [
+        (25, 24, 1, "entity_a_higher"),
+        (24, 25, 1, "entity_b_higher"),
+        (10, 10, 0, "tie"),
+        (10, None, None, None),
+    ]
+    for value_a, value_b, expected_difference, expected_outcome in cases:
+        result = router.ComparisonResult(
+            status="resolved",
+            metric="goals",
+            values=[
+                router.ComparisonValue(entity_name="Entity A", value=value_a),
+                router.ComparisonValue(entity_name="Entity B", value=value_b),
+            ],
+            explanation="Entity A: ... | Entity B: ...",
+        )
+        assert result.difference == expected_difference, (
+            f"values=({value_a!r}, {value_b!r}): difference = {result.difference!r}, "
+            f"expected {expected_difference!r}"
+        )
+        assert result.outcome == expected_outcome, (
+            f"values=({value_a!r}, {value_b!r}): outcome = {result.outcome!r}, "
+            f"expected {expected_outcome!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Tests: Retrieval post-processing regressions
 # ---------------------------------------------------------------------------
