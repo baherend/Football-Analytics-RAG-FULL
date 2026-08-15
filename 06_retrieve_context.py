@@ -1067,7 +1067,9 @@ def retrieve_context(
 # ---------------------------------------------------------------------------
 
 from dataclasses import dataclass, field
-from src.query.query_schema import StructuredQuery, StructuredResult, Filter
+from src.query.query_schema import (
+    StructuredQuery, StructuredResult, Filter, ComparisonResult, ComparisonValue,
+)
 from src.query.resolver import resolve as structured_resolve
 from src.query.vocab import resolve_metric, resolve_aggregation, METRIC_SYNONYMS, AGGREGATION_SYNONYMS
 from src.stage_taxonomy import StageTaxonomy, WC2022_STAGE_TAXONOMY
@@ -1729,21 +1731,24 @@ def execute_route(
 
         if entity_results:
             parts = []
+            values = []
             for name, result in entity_results:
                 if result.status in ("resolved", "partial"):
                     parts.append(f"{name}: {result.explanation}")
                 else:
                     parts.append(f"{name}: No data available")
+                # Preserve the already-computed aggregated_value verbatim --
+                # never reparsed from result.explanation. `None` for an
+                # unresolved entity carries the same meaning it already has
+                # on StructuredResult.aggregated_value.
+                values.append(ComparisonValue(entity_name=name, value=result.aggregated_value))
 
-            class _CombinedResult:
-                def __init__(self, explanation):
-                    self.status = "resolved"
-                    self.explanation = explanation
-                    self.aggregated_value = None
-                    self.data = []
-                    self.dropped_filters = []
-
-            structured_result = _CombinedResult(" | ".join(parts))
+            structured_result = ComparisonResult(
+                status="resolved",
+                metric=comparison_metric,
+                values=values,
+                explanation=" | ".join(parts),
+            )
 
     elif route.path in ("structured", "hybrid") and route.structured_query:
         try:

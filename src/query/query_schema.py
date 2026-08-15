@@ -104,6 +104,57 @@ class StructuredResult:
 
 
 # ---------------------------------------------------------------------------
+# ComparisonResult
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ComparisonValue:
+    """One entity's authoritative value within a two-entity comparison."""
+    entity_name: str
+    value: float | int | None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class ComparisonResult:
+    """
+    Result of executing a two-entity structured comparison (see
+    06_retrieve_context.py's execute_route(), comparison branch).
+
+    Unlike StructuredResult -- which represents one StructuredQuery and
+    one aggregated_value -- a comparison inherently resolves two
+    independent structured queries (one per entity) against the same
+    metric. `values` preserves each entity's already-computed
+    aggregated_value from its own StructuredResult, without recomputing
+    or reparsing either number from explanation prose.
+
+    Status values:
+        "resolved" -- both entity queries were executed. A per-entity
+            resolved/partial/empty breakdown (e.g. one entity resolved,
+            the other empty) is not yet distinguished here -- see
+            06_retrieve_context.py for current handling.
+
+    Winner/tie and the numeric difference are intentionally NOT computed
+    here -- they are derivable later from `values` once needed.
+    """
+    status: str  # "resolved" (see docstring for current status semantics)
+    metric: str
+    values: list[ComparisonValue] = field(default_factory=list)
+    explanation: str = ""  # human-readable explanation
+
+    def to_dict(self) -> dict:
+        return {
+            "status": self.status,
+            "metric": self.metric,
+            "values": [v.to_dict() for v in self.values],
+            "explanation": self.explanation,
+        }
+
+
+# ---------------------------------------------------------------------------
 # Helper constructors
 # ---------------------------------------------------------------------------
 

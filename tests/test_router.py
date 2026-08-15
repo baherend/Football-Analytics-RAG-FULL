@@ -334,6 +334,58 @@ def test_comparison_entity_extraction_excludes_trailing_metric_clause():
     )
 
 
+def test_comparison_result_preserves_both_authoritative_values(monkeypatch):
+    """
+    Comparison Engine Step 2D/2E: execute_route()'s comparison branch
+    already resolves a real, correct StructuredResult per entity (each
+    with its own aggregated_value) -- Step 2D proved these were then
+    discarded except for `.explanation`, flattened into a single prose
+    string on the ad-hoc _CombinedResult (aggregated_value=None, data=[],
+    verified live against real EPL artifacts). Step 2E replaces that with
+    ComparisonResult (src/query/query_schema.py), whose `values` field
+    preserves each entity's aggregated_value as ComparisonValue records --
+    not overloading StructuredResult's single-query/single-value fields.
+
+    This test proves both authoritative values, their entity identities,
+    and the resolved metric are recoverable from structured (non-string)
+    fields -- never by re-parsing `.explanation` prose.
+    """
+    def fake_structured_resolve(query, data_path=None, stage_taxonomy=None):
+        value = 25 if query.entity_name == "Harry Kane" else 24
+        return SimpleNamespace(
+            status="resolved",
+            explanation=f"{query.entity_name}'s total goals is {value}.",
+            aggregated_value=value,
+            data=[],
+            dropped_filters=[],
+        )
+
+    monkeypatch.setattr(router, "structured_resolve", fake_structured_resolve)
+
+    route = router.Route(
+        path="hybrid",
+        confidence=0.9,
+        reason="test",
+        semantic_query="Who scored more goals, Harry Kane or Jamie Vardy?",
+    )
+    result = router.execute_route(route, semantic_k=0)
+    sr = result.structured_result
+
+    # Both authoritative values, their entity identities.
+    recovered = {v.entity_name: v.value for v in sr.values}
+    assert recovered == {"Harry Kane": 25, "Jamie Vardy": 24}, (
+        f"comparison structured_result.values = {sr.values!r} -- both authoritative "
+        "entity values, keyed by entity identity, must be recoverable as structured "
+        f"data, not only flattened into explanation text ({sr.explanation!r})."
+    )
+
+    # Metric preserved structurally (not re-derived from explanation text).
+    assert sr.metric == "goals", (
+        f"comparison structured_result.metric = {sr.metric!r}, expected 'goals' to be "
+        "preserved structurally alongside the two values."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tests: Retrieval post-processing regressions
 # ---------------------------------------------------------------------------
