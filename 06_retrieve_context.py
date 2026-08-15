@@ -1184,6 +1184,34 @@ def _detect_comparison(query: str) -> list[str]:
     return []
 
 
+def _detect_comparison_metric(query: str) -> str:
+    """
+    Best-effort extraction of the metric a comparison query is asking
+    about, reusing the existing metric vocabulary/resolver (no separate
+    comparison-specific metric vocabulary).
+
+    Two distinct cases, mirroring parse_structured_query()'s existing
+    unknown-metric contract as closely as possible:
+
+    - No metric phrase is mentioned at all (e.g. "Compare Messi and
+      Mbappé's performance") -- falls back to "goals", the long-standing
+      default for genuinely metric-less comparisons.
+    - A metric phrase IS mentioned ("who <verb> more <metric>, A or B")
+      but doesn't resolve (e.g. "corners") -- the raw, unresolved phrase
+      is returned unchanged, exactly like parse_structured_query()'s
+      "how many <metric> did <player> have" pattern already does when
+      resolve_metric() fails. structured_resolve() then rejects it via
+      validate_query(), producing status="empty" for that entity -- it
+      must never be silently swapped for "goals".
+    """
+    match = re.search(r"who\s+\w+\s+more\s+([\w\s]+?),", query.lower())
+    if not match:
+        return "goals"
+
+    phrase = match.group(1).strip()
+    return resolve_metric(phrase) or phrase
+
+
 # Route types
 @dataclass
 class Route:
@@ -1679,9 +1707,10 @@ def execute_route(
     # For hybrid comparison queries, run structured queries for each entity
     comparison_entities = _detect_comparison(route.semantic_query or "")
     if route.path == "hybrid" and comparison_entities:
+        comparison_metric = _detect_comparison_metric(route.semantic_query or "")
         entity_results = []
         for entity_name in comparison_entities:
-            sq = StructuredQuery(intent="numeric", entity="player", metric="goals",
+            sq = StructuredQuery(intent="numeric", entity="player", metric=comparison_metric,
                                  aggregation="sum", entity_name=entity_name)
             try:
                 result = structured_resolve(

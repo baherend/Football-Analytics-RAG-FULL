@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 from src.query.query_schema import StructuredQuery, StructuredResult
 from src.query.resolver import resolve as structured_resolve
@@ -213,6 +214,104 @@ def test_comparison_entity_extraction_who_scored_more_phrasing():
         "attempted for either entity."
     )
 
+
+def test_comparison_preserves_requested_metric(monkeypatch):
+    """
+    Comparison Engine Step 2B: execute_route()'s comparison branch
+    hardcodes metric="goals" for BOTH entities regardless of what the
+    query actually asks about (06_retrieve_context.py, execute_route(),
+    "for hybrid comparison queries, run structured queries for each
+    entity"). A query explicitly comparing "assists" must send
+    metric="assists" to both structured_resolve() calls, not "goals".
+    """
+    captured = []
+
+    def fake_structured_resolve(query, data_path=None, stage_taxonomy=None):
+        captured.append((query.entity_name, query.metric))
+        return SimpleNamespace(
+            status="resolved",
+            explanation=f"{query.entity_name}: ok",
+            aggregated_value=1,
+            data=[],
+            dropped_filters=[],
+        )
+
+    monkeypatch.setattr(router, "structured_resolve", fake_structured_resolve)
+
+    route = router.Route(
+        path="hybrid",
+        confidence=0.9,
+        reason="test",
+        semantic_query="Who had more assists, Alpha Player or Beta Player?",
+    )
+    router.execute_route(route, semantic_k=0)
+
+    assert captured == [
+        ("Alpha Player", "assists"),
+        ("Beta Player", "assists"),
+    ], (
+        f"execute_route() sent {captured} to structured_resolve() for an "
+        "assists comparison -- expected both entities to receive the "
+        "requested metric 'assists', not the hardcoded 'goals'."
+    )
+
+
+def test_comparison_unsupported_metric_does_not_silently_become_goals(monkeypatch):
+    """
+    Comparison Engine Step 2B safety check: the existing single-entity
+    structured path already has an established contract for an explicitly
+    requested but unsupported metric -- parse_structured_query() passes
+    the raw, unresolved metric text through unchanged to StructuredQuery
+    (see the "how many <metric> did <player> have" pattern's else branch),
+    and structured_resolve() naturally rejects it via validate_query(),
+    producing StructuredResult(status="empty", explanation="Unknown
+    metric: <raw text>"). Verified live: "How many corners did Messi
+    have?" -> StructuredResult(status='empty', explanation='Unknown
+    metric: corners'). "corners" is confirmed absent from both
+    METRIC_SYNONYMS and ALL_METRICS via resolve_metric("corners") is None.
+
+    The comparison branch must mirror this exact contract, not fall back
+    to its "no metric mentioned" default of "goals" -- an explicitly
+    requested but unsupported metric must never silently become goals.
+    """
+    from src.query.vocab import resolve_metric
+    assert resolve_metric("corners") is None, (
+        "test fixture assumption broken: 'corners' must be an unsupported "
+        "metric for this test to prove anything"
+    )
+
+    captured = []
+
+    def fake_structured_resolve(query, data_path=None, stage_taxonomy=None):
+        captured.append((query.entity_name, query.metric))
+        return SimpleNamespace(
+            status="resolved",
+            explanation=f"{query.entity_name}: ok",
+            aggregated_value=1,
+            data=[],
+            dropped_filters=[],
+        )
+
+    monkeypatch.setattr(router, "structured_resolve", fake_structured_resolve)
+
+    route = router.Route(
+        path="hybrid",
+        confidence=0.9,
+        reason="test",
+        semantic_query="Who had more corners, Alpha Player or Beta Player?",
+    )
+    router.execute_route(route, semantic_k=0)
+
+    assert captured == [
+        ("Alpha Player", "corners"),
+        ("Beta Player", "corners"),
+    ], (
+        f"execute_route() sent {captured} to structured_resolve() for an "
+        "explicitly-requested but unsupported metric ('corners') -- it "
+        "must be passed through unresolved, mirroring "
+        "parse_structured_query()'s existing unknown-metric contract, "
+        "not silently replaced with 'goals'."
+    )
 
 
 # ---------------------------------------------------------------------------
