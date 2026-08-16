@@ -308,7 +308,7 @@ def _write_bm25_index(path: Path, chunk_ids: list[str]) -> None:
 
 def test_chunk_loader_reads_one_namespace_without_leaking_into_another(tmp_path):
     from importlib import import_module
-    router = import_module("06_retrieve_context")
+    router = import_module("src.retrieval.search")
 
     paths_a = ArtifactPaths(competition_id=2, season_id=27, output_root=tmp_path)
     paths_b = ArtifactPaths(competition_id=3, season_id=1, output_root=tmp_path)
@@ -328,7 +328,7 @@ def test_chunk_loader_reads_one_namespace_without_leaking_into_another(tmp_path)
 
 def test_bm25_loader_reads_one_namespace_without_leaking_into_another(tmp_path):
     from importlib import import_module
-    router = import_module("06_retrieve_context")
+    router = import_module("src.retrieval.search")
 
     paths_a = ArtifactPaths(competition_id=2, season_id=27, output_root=tmp_path)
     paths_b = ArtifactPaths(competition_id=3, season_id=1, output_root=tmp_path)
@@ -849,7 +849,7 @@ def test_hybrid_search_uses_only_selected_dataset_artifacts(monkeypatch, tmp_pat
     sequentially in one process do not cross-read each other's artifacts.
     """
     from importlib import import_module
-    router = import_module("06_retrieve_context")
+    router = import_module("src.retrieval.search")
     chroma_mod = import_module("05_create_chroma_store")
 
     monkeypatch.setattr("sentence_transformers.SentenceTransformer", _FakeEmbeddingModel)
@@ -888,7 +888,7 @@ def test_execute_route_structured_path_uses_selected_match_facts(tmp_path):
     """Proof 2: execute_route's structured path resolves against the
     selected competition/season's match_facts, not the legacy default."""
     from importlib import import_module
-    router = import_module("06_retrieve_context")
+    router = import_module("src.query.router")
 
     paths_b = ArtifactPaths(competition_id=3, season_id=1, output_root=tmp_path)
     _write_match_facts(paths_b.match_facts, "Test Player", goals=9)
@@ -987,8 +987,10 @@ def test_default_runtime_calls_remain_legacy_compatible(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Final gap fix: 06_retrieve_context.py's CLI (main()) can select a dataset
-# and threads it into execute_route() as artifact_paths.
+# Final gap fix: src/query/router.py's CLI (main(), `python -m
+# src.query.router`; moved from 06_retrieve_context.py in Structural
+# Cleanup Phase B) can select a dataset and threads it into execute_route()
+# as artifact_paths.
 # ---------------------------------------------------------------------------
 
 
@@ -1021,10 +1023,10 @@ def test_cli_default_query_passes_artifact_paths_none(monkeypatch):
     import sys
     from importlib import import_module
 
-    router = import_module("06_retrieve_context")
+    router = import_module("src.query.router")
     captured = _stub_execute_route(router, monkeypatch)
 
-    monkeypatch.setattr(sys, "argv", ["06_retrieve_context.py", "How many goals did Messi score?"])
+    monkeypatch.setattr(sys, "argv", ["router.py", "How many goals did Messi score?"])
 
     assert router.main() == 0
     assert captured["route_artifact_paths"] is None
@@ -1038,11 +1040,11 @@ def test_cli_non_wc_competition_passes_matching_artifact_paths(monkeypatch):
     import sys
     from importlib import import_module
 
-    router = import_module("06_retrieve_context")
+    router = import_module("src.query.router")
     captured = _stub_execute_route(router, monkeypatch)
 
     monkeypatch.setattr(sys, "argv", [
-        "06_retrieve_context.py", "How many goals did Messi score?",
+        "router.py", "How many goals did Messi score?",
         "--competition-id", "2", "--season-id", "27",
     ])
 
@@ -1057,11 +1059,11 @@ def test_cli_namespaced_flag_forces_wc2022_artifact_paths(monkeypatch):
     import sys
     from importlib import import_module
 
-    router = import_module("06_retrieve_context")
+    router = import_module("src.query.router")
     captured = _stub_execute_route(router, monkeypatch)
 
     monkeypatch.setattr(sys, "argv", [
-        "06_retrieve_context.py", "How many goals did Messi score?", "--namespaced",
+        "router.py", "How many goals did Messi score?", "--namespaced",
     ])
 
     assert router.main() == 0
@@ -1075,11 +1077,11 @@ def test_cli_namespaced_flag_is_a_no_op_for_non_wc_competition(monkeypatch):
     import sys
     from importlib import import_module
 
-    router = import_module("06_retrieve_context")
+    router = import_module("src.query.router")
     captured = _stub_execute_route(router, monkeypatch)
 
     monkeypatch.setattr(sys, "argv", [
-        "06_retrieve_context.py", "How many goals did Messi score?",
+        "router.py", "How many goals did Messi score?",
         "--competition-id", "2", "--season-id", "27", "--namespaced",
     ])
 
@@ -1173,7 +1175,7 @@ def test_chroma_store_cli_namespaced_wc2022_uses_dataset_collection_name(monkeyp
 def test_dense_search_uses_dataset_collection_name_when_artifact_paths_are_given(monkeypatch, tmp_path):
     from importlib import import_module
 
-    router = import_module("06_retrieve_context")
+    router = import_module("src.retrieval.search")
     paths = ArtifactPaths(competition_id=2, season_id=27, output_root=tmp_path)
 
     seen = {}
@@ -1206,7 +1208,7 @@ def test_dense_search_uses_dataset_collection_name_when_artifact_paths_are_given
 def test_default_dense_search_keeps_legacy_wc2022_collection_name(monkeypatch):
     from importlib import import_module
 
-    router = import_module("06_retrieve_context")
+    router = import_module("src.retrieval.search")
     seen = {}
 
     class FakeCollection:

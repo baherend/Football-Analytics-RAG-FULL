@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import sys
 import time
@@ -86,7 +87,7 @@ def evaluate_router_accuracy(
         }
     """
     # Lazy import to allow --skip-retrieval mode
-    router = _import_module("router", "06_retrieve_context.py")
+    router = importlib.import_module("src.query.router")
 
     correct = 0
     failures = []
@@ -163,7 +164,7 @@ def evaluate_structured_accuracy(
 
         # Build a StructuredQuery from the benchmark entry
         # Use the router to parse it
-        router = _import_module("router", "06_retrieve_context.py")
+        router = importlib.import_module("src.query.router")
 
         route = router.route_query(query)
         sq = route.structured_query
@@ -270,7 +271,7 @@ def evaluate_retrieval_precision(
         }
     """
     try:
-        retrieve = _import_module("retrieve", "06_retrieve_context.py")
+        retrieve = importlib.import_module("src.retrieval.search")
     except Exception as e:
         return {
             "precision_at_k": 0.0,
@@ -379,7 +380,7 @@ def evaluate_retrieval_level_recall(
         }
     """
     try:
-        retrieve = _import_module("retrieve", "06_retrieve_context.py")
+        retrieve = importlib.import_module("src.retrieval.search")
     except Exception as e:
         return {
             "recall": 0.0,
@@ -466,7 +467,7 @@ def evaluate_mrr(
         }
     """
     try:
-        retrieve = _import_module("retrieve", "06_retrieve_context.py")
+        retrieve = importlib.import_module("src.retrieval.search")
     except Exception as e:
         return {
             "mrr": 0.0,
@@ -552,10 +553,10 @@ def evaluate_latency(
             "by_category": dict[str, float],
         }
     """
-    router = _import_module("router", "06_retrieve_context.py")
+    router = importlib.import_module("src.query.router")
 
     try:
-        retrieve = _import_module("retrieve", "06_retrieve_context.py")
+        retrieve = importlib.import_module("src.retrieval.search")
         has_retrieval = True
     except Exception:
         has_retrieval = False

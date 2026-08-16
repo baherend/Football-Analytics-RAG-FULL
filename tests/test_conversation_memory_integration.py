@@ -24,15 +24,13 @@ from src.conversation_memory import ConversationMemory
 
 
 def _patch_router(monkeypatch, prompting, fake_route_and_execute):
-    fake_router = SimpleNamespace(route_and_execute=fake_route_and_execute)
-    real_import_module = prompting.import_module
-
-    def fake_import_module(name):
-        if name == "06_retrieve_context":
-            return fake_router
-        return real_import_module(name)
-
-    monkeypatch.setattr(prompting, "import_module", fake_import_module)
+    """
+    Structural Cleanup Phase B: answer_question() now imports
+    route_and_execute directly from src.query.router (`from
+    src.query.router import route_and_execute`), so it resolves the name
+    from 07_prompting.py's own module globals -- patch it there.
+    """
+    monkeypatch.setattr(prompting, "route_and_execute", fake_route_and_execute)
 
 
 def test_answer_question_searches_memory_under_selected_dataset_scope(monkeypatch):

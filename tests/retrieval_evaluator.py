@@ -856,25 +856,26 @@ def aggregate_by_group(
 
 
 def load_retrieval_module(project_root: str = ".") -> Any:
-    """Load 06_retrieve_context.py as a module without executing CLI."""
-    module_path = os.path.join(project_root, "06_retrieve_context.py")
-    if not os.path.exists(module_path):
-        raise RetrievalEvaluationError(
-            f"Retrieval module not found: {module_path}"
-        )
-
-    # Ensure project root is on sys.path
+    """
+    Load the retrieval module (src/retrieval/search.py -- see Structural
+    Cleanup Phase A/B; this used to load the now-deleted
+    06_retrieve_context.py compatibility wrapper).
+    """
+    # Ensure project root is on sys.path so `src.*` is importable.
     abs_root = os.path.abspath(project_root)
     if abs_root not in sys.path:
         sys.path.insert(0, abs_root)
 
     import importlib
 
-    # Force reload to get fresh module
-    if "06_retrieve_context" in sys.modules:
-        del sys.modules["06_retrieve_context"]
+    # Force reload to get fresh module state (caches, etc.).
+    if "src.retrieval.search" in sys.modules:
+        del sys.modules["src.retrieval.search"]
 
-    mod = importlib.import_module("06_retrieve_context")
+    try:
+        mod = importlib.import_module("src.retrieval.search")
+    except ImportError as e:
+        raise RetrievalEvaluationError(f"Retrieval module not found: {e}")
     return mod
 
 
@@ -1058,7 +1059,7 @@ class TemporaryChromaArtifactPaths:
     Evaluator-only, ArtifactPaths-compatible view used for Dense/Hybrid
     retrieval while inside a `temporary_chroma_copy(...)` context.
 
-    Production `dense_search`/`hybrid_search` (see 06_retrieve_context.py)
+    Production `dense_search`/`hybrid_search` (see src/retrieval/search.py)
     take an `artifact_paths` argument and, when it is not None, read
     `artifact_paths.chroma_dir` / `artifact_paths.chroma_collection_name`
     directly -- ignoring the retrieval module's patched `CHROMA_DIR`

@@ -17,7 +17,6 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
-from importlib import import_module
 
 from src.artifacts import ArtifactPaths
 from src.conversation_memory import (
@@ -26,6 +25,7 @@ from src.conversation_memory import (
     resolve_pronoun_references,
 )
 from src.query.query_schema import ComparisonResult
+from src.query.router import route_and_execute
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -876,8 +876,6 @@ def answer_question(question: str, api_key: str | None = None,
     "loading" gap; showing retrieved-but-insufficient evidence under a
     refusal would misleadingly imply it supports an answer it does not.
     """
-    route_and_execute = import_module("06_retrieve_context").route_and_execute
-
     relevant_turns = memory.search(artifact_paths, question) if memory is not None else []
     retrieval_query = resolve_pronoun_references(question, relevant_turns)
 

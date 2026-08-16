@@ -50,9 +50,15 @@ def load_module_from_path(name: str, path: str):
 # Load modules
 print("Loading RAG pipeline...")
 try:
-    router_mod = load_module_from_path("router", "06_retrieve_context.py")
+    # Structural Cleanup Phase B: query routing/execution is a real package
+    # module now (src/query/router.py, see Phase A) -- loaded with a normal
+    # import instead of the file-path loader the numbered-script era needed.
+    # `router_mod` is kept as the existing name/attribute-access pattern
+    # (router_mod.route_query(...), router_mod.execute_route(...)) so
+    # nothing downstream in this file changes.
+    import src.query.router as router_mod
 except Exception as e:
-    print(f"Error loading router (06_retrieve_context.py): {e}")
+    print(f"Error loading router (src.query.router): {e}")
     print("Make sure all dependencies are installed: pip install -r requirements.txt")
     raise SystemExit(1)
 

@@ -273,15 +273,10 @@ def test_selected_catalog_entry_reaches_answer_question(monkeypatch, tmp_path):
         captured["artifact_paths"] = artifact_paths
         return SimpleNamespace(context="test context", semantic_chunks=[])
 
-    fake_router = SimpleNamespace(route_and_execute=fake_route_and_execute)
-    real_import_module = prompting.import_module
-
-    def fake_import_module(name):
-        if name == "06_retrieve_context":
-            return fake_router
-        return real_import_module(name)
-
-    monkeypatch.setattr(prompting, "import_module", fake_import_module)
+    # Structural Cleanup Phase B: answer_question() imports route_and_execute
+    # directly from src.query.router, resolving it from 07_prompting.py's
+    # own module globals -- patch it there.
+    monkeypatch.setattr(prompting, "route_and_execute", fake_route_and_execute)
     monkeypatch.setattr(prompting, "ask_groq", lambda *args, **kwargs: "test answer")
 
     prompting.answer_question(
@@ -312,15 +307,10 @@ def test_selected_legacy_entry_reaches_answer_question_as_none(monkeypatch, tmp_
         captured["artifact_paths"] = artifact_paths
         return SimpleNamespace(context="test context", semantic_chunks=[])
 
-    fake_router = SimpleNamespace(route_and_execute=fake_route_and_execute)
-    real_import_module = prompting.import_module
-
-    def fake_import_module(name):
-        if name == "06_retrieve_context":
-            return fake_router
-        return real_import_module(name)
-
-    monkeypatch.setattr(prompting, "import_module", fake_import_module)
+    # Structural Cleanup Phase B: answer_question() imports route_and_execute
+    # directly from src.query.router, resolving it from 07_prompting.py's
+    # own module globals -- patch it there.
+    monkeypatch.setattr(prompting, "route_and_execute", fake_route_and_execute)
     monkeypatch.setattr(prompting, "ask_groq", lambda *args, **kwargs: "test answer")
 
     prompting.answer_question(

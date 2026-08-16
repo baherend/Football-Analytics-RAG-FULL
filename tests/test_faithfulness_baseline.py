@@ -87,7 +87,6 @@ def test_chat_process_query_stops_before_generation_when_context_is_unanswerable
 
 def test_answer_question_stops_before_generation_when_context_is_unanswerable(monkeypatch):
     prompting = import_module("07_prompting")
-    retrieval = import_module("06_retrieve_context")
     selected = ArtifactPaths(2, 27)
 
     unanswerable = AnswerabilityAssessment(
@@ -97,7 +96,7 @@ def test_answer_question_stops_before_generation_when_context_is_unanswerable(mo
     )
 
     monkeypatch.setattr(
-        retrieval,
+        prompting,
         "route_and_execute",
         lambda q, artifact_paths=None: SimpleNamespace(
             structured_result=None,
@@ -204,7 +203,6 @@ def test_process_query_does_not_block_valid_structured_result_when_semantic_unan
 
 def test_answer_question_unanswerable_refuses_even_without_api_key(monkeypatch):
     prompting = import_module("07_prompting")
-    retrieval = import_module("06_retrieve_context")
     selected = ArtifactPaths(2, 27)
 
     unanswerable = AnswerabilityAssessment(
@@ -214,7 +212,7 @@ def test_answer_question_unanswerable_refuses_even_without_api_key(monkeypatch):
     )
 
     monkeypatch.setattr(
-        retrieval,
+        prompting,
         "route_and_execute",
         lambda q, artifact_paths=None: SimpleNamespace(
             structured_result=None,
@@ -298,7 +296,7 @@ def test_format_context_for_prompt_distinguishes_chunks_with_identical_display_m
 
 
 def test_retrieval_build_context_uses_source_labels_with_chunk_identity():
-    retrieval = import_module("06_retrieve_context")
+    retrieval = import_module("src.retrieval.search")
 
     chunks = [
         {
@@ -345,7 +343,6 @@ def test_answer_question_corrects_structured_numeric_contradiction(monkeypatch):
     unchanged even though the exact same authoritative fact was available.
     """
     prompting = import_module("07_prompting")
-    retrieval = import_module("06_retrieve_context")
     selected = ArtifactPaths(2, 27)
 
     structured_result = SimpleNamespace(
@@ -363,7 +360,7 @@ def test_answer_question_corrects_structured_numeric_contradiction(monkeypatch):
     )
 
     monkeypatch.setattr(
-        retrieval,
+        prompting,
         "route_and_execute",
         lambda q, artifact_paths=None: SimpleNamespace(
             structured_result=structured_result,
@@ -400,7 +397,6 @@ def test_answer_question_leaves_correct_structured_answer_unchanged(monkeypatch)
     detected contradiction should ever alter the returned text.
     """
     prompting = import_module("07_prompting")
-    retrieval = import_module("06_retrieve_context")
     selected = ArtifactPaths(2, 27)
 
     structured_result = SimpleNamespace(
@@ -414,7 +410,7 @@ def test_answer_question_leaves_correct_structured_answer_unchanged(monkeypatch)
     )
 
     monkeypatch.setattr(
-        retrieval,
+        prompting,
         "route_and_execute",
         lambda q, artifact_paths=None: SimpleNamespace(
             structured_result=structured_result,
@@ -445,7 +441,6 @@ def test_answer_question_pure_semantic_skips_structured_validation(monkeypatch):
     usable structured result should trigger validate_answer() at all.
     """
     prompting = import_module("07_prompting")
-    retrieval = import_module("06_retrieve_context")
     selected = ArtifactPaths(2, 27)
 
     answerable = AnswerabilityAssessment(
@@ -453,7 +448,7 @@ def test_answer_question_pure_semantic_skips_structured_validation(monkeypatch):
     )
 
     monkeypatch.setattr(
-        retrieval,
+        prompting,
         "route_and_execute",
         lambda q, artifact_paths=None: SimpleNamespace(
             structured_result=None,
@@ -506,7 +501,6 @@ def test_answer_question_blocks_incomplete_partial_comparison(monkeypatch):
     unanswerable, this must trigger the same deterministic refusal an
     unsupported query already gets, not reach generation.
     """
-    retrieval = import_module("06_retrieve_context")
     selected = ArtifactPaths(2, 27)
 
     incomplete_comparison = ComparisonResult(
@@ -523,7 +517,7 @@ def test_answer_question_blocks_incomplete_partial_comparison(monkeypatch):
     )
 
     monkeypatch.setattr(
-        retrieval,
+        prompting,
         "route_and_execute",
         lambda q, artifact_paths=None: SimpleNamespace(
             structured_result=incomplete_comparison,
@@ -628,7 +622,6 @@ def test_answer_question_complete_partial_comparison_remains_usable(monkeypatch)
     must not be blocked merely because its status string is "partial",
     and its status must not be silently upgraded to "resolved".
     """
-    retrieval = import_module("06_retrieve_context")
     selected = ArtifactPaths(2, 27)
 
     complete_partial_comparison = ComparisonResult(
@@ -649,7 +642,7 @@ def test_answer_question_complete_partial_comparison_remains_usable(monkeypatch)
     )
 
     monkeypatch.setattr(
-        retrieval,
+        prompting,
         "route_and_execute",
         lambda q, artifact_paths=None: SimpleNamespace(
             structured_result=complete_partial_comparison,
@@ -695,7 +688,6 @@ def test_answer_question_ordinary_partial_structured_result_remains_usable(monke
     via the presence of a `.values` list) and must not affect ordinary
     structured results, which have no `.values` attribute at all.
     """
-    retrieval = import_module("06_retrieve_context")
     selected = ArtifactPaths(2, 27)
 
     ordinary_partial = SimpleNamespace(
@@ -710,7 +702,7 @@ def test_answer_question_ordinary_partial_structured_result_remains_usable(monke
     )
 
     monkeypatch.setattr(
-        retrieval,
+        prompting,
         "route_and_execute",
         lambda q, artifact_paths=None: SimpleNamespace(
             structured_result=ordinary_partial,
@@ -752,7 +744,6 @@ def test_answer_question_corrects_comparison_outcome_contradiction(monkeypatch):
     reaches the user unchanged, because validate_answer() cannot detect
     the contradiction at all in this shape.
     """
-    retrieval = import_module("06_retrieve_context")
     selected = ArtifactPaths(2, 27)
 
     comparison = ComparisonResult(
@@ -773,7 +764,7 @@ def test_answer_question_corrects_comparison_outcome_contradiction(monkeypatch):
     )
 
     monkeypatch.setattr(
-        retrieval,
+        prompting,
         "route_and_execute",
         lambda q, artifact_paths=None: SimpleNamespace(
             structured_result=comparison,
@@ -939,7 +930,6 @@ def test_answer_question_exposes_semantic_sources_to_user(monkeypatch):
     back to the exact chunk actually used for generation.
     """
     prompting = import_module("07_prompting")
-    retrieval = import_module("06_retrieve_context")
     selected = ArtifactPaths(2, 27)
 
     chunk = {
@@ -952,7 +942,7 @@ def test_answer_question_exposes_semantic_sources_to_user(monkeypatch):
     )
 
     monkeypatch.setattr(
-        retrieval,
+        prompting,
         "route_and_execute",
         lambda q, artifact_paths=None: SimpleNamespace(
             structured_result=None,
@@ -1093,7 +1083,6 @@ def test_answer_question_refusal_exposes_no_citations_even_with_retrieved_eviden
     when semantic evidence was actually retrieved but judged insufficient --
     showing it would misleadingly imply it supports an answer it does not."""
     prompting = import_module("07_prompting")
-    retrieval = import_module("06_retrieve_context")
     selected = ArtifactPaths(2, 27)
 
     unanswerable = AnswerabilityAssessment(
@@ -1101,7 +1090,7 @@ def test_answer_question_refusal_exposes_no_citations_even_with_retrieved_eviden
     )
 
     monkeypatch.setattr(
-        retrieval,
+        prompting,
         "route_and_execute",
         lambda q, artifact_paths=None: SimpleNamespace(
             structured_result=None,
