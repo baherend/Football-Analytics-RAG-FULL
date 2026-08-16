@@ -912,9 +912,15 @@ def test_sibling_expansion_uses_selected_chunks_not_legacy(monkeypatch, tmp_path
     Proof 3: the sibling-expansion safeguard (_expand_query_entity_siblings)
     must load the SELECTED dataset's chunks, never silently defaulting to
     the legacy path, when artifact_paths is given.
+
+    Structural Cleanup Phase A: both functions now live in
+    src.retrieval.search (moved from 06_retrieve_context.py) -- patched
+    there directly, since _expand_query_entity_siblings() resolves
+    _load_chunks via that module's own globals, not the compatibility
+    wrapper's.
     """
     from importlib import import_module
-    router = import_module("06_retrieve_context")
+    router = import_module("src.retrieval.search")
 
     paths_b = ArtifactPaths(competition_id=3, season_id=1, output_root=tmp_path)
     _write_chunks(paths_b.chunks, ["b1", "b2"])
@@ -943,9 +949,14 @@ def test_default_runtime_calls_remain_legacy_compatible(monkeypatch):
     argument must keep using the legacy module-level defaults (path=None
     reaching the loaders, persist_dir/collection_name at their defaults) --
     unchanged behavior for every existing zero-argument production caller.
+
+    Structural Cleanup Phase A: all patched symbols and hybrid_search()
+    itself now live in src.retrieval.search (moved from
+    06_retrieve_context.py) -- patched there directly, since hybrid_search()
+    resolves them via that module's own globals.
     """
     from importlib import import_module
-    router = import_module("06_retrieve_context")
+    router = import_module("src.retrieval.search")
 
     seen = {}
 
@@ -1222,9 +1233,15 @@ def test_default_dense_search_keeps_legacy_wc2022_collection_name(monkeypatch):
     assert seen["collection_name"] == "wc2022_documents"
 
 def test_retrieve_context_semantic_mode_uses_dataset_collection_name(monkeypatch, tmp_path):
+    """
+    Structural Cleanup Phase A: retrieve_context() and semantic_search()
+    now live in src.retrieval.search (moved from 06_retrieve_context.py) --
+    patched there directly, since retrieve_context() resolves
+    semantic_search() via that module's own globals.
+    """
     from importlib import import_module
 
-    router = import_module("06_retrieve_context")
+    router = import_module("src.retrieval.search")
     paths = ArtifactPaths(competition_id=2, season_id=27, output_root=tmp_path)
     seen = {}
 
@@ -1251,7 +1268,7 @@ def test_execute_route_threads_persisted_stage_taxonomy_to_structured_resolver(m
     from types import SimpleNamespace
     from src.stage_taxonomy import StageTaxonomy
 
-    router = import_module("06_retrieve_context")
+    router = import_module("src.query.router")
     paths = ArtifactPaths(competition_id=7, season_id=11, output_root=tmp_path)
 
     taxonomy = StageTaxonomy.discover(
@@ -1313,7 +1330,7 @@ def test_execute_route_comparison_threads_persisted_stage_taxonomy_to_both_resol
     from types import SimpleNamespace
     from src.stage_taxonomy import StageTaxonomy
 
-    router = import_module("06_retrieve_context")
+    router = import_module("src.query.router")
     paths = ArtifactPaths(competition_id=7, season_id=11, output_root=tmp_path)
 
     taxonomy = StageTaxonomy.discover(
@@ -1381,7 +1398,7 @@ def test_team_comparison_routes_both_entities_as_teams(monkeypatch, tmp_path):
     from types import SimpleNamespace
     from src.stage_taxonomy import StageTaxonomy
 
-    router = import_module("06_retrieve_context")
+    router = import_module("src.query.router")
     paths = ArtifactPaths(competition_id=42, season_id=1, output_root=tmp_path)
 
     taxonomy = StageTaxonomy.discover(
@@ -1462,7 +1479,7 @@ def test_mixed_player_team_comparison_does_not_fabricate_same_type(monkeypatch, 
     from types import SimpleNamespace
     from src.stage_taxonomy import StageTaxonomy
 
-    router = import_module("06_retrieve_context")
+    router = import_module("src.query.router")
     paths = ArtifactPaths(competition_id=43, season_id=1, output_root=tmp_path)
 
     taxonomy = StageTaxonomy.discover(

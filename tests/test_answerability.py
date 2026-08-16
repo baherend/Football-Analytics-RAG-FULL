@@ -88,17 +88,15 @@ def test_matching_facets_for_different_entity_are_unanswerable():
     assert assessment.status == "unanswerable"
 
 def test_semantic_route_exposes_answerability_assessment(monkeypatch):
-    import importlib.util
-    import sys
-    from pathlib import Path
+    """
+    Structural Cleanup Phase A: execute_route() now lives in
+    src.query.router (moved from 06_retrieve_context.py) -- hybrid_search()
+    is patched there directly, since execute_route() resolves it via that
+    module's own globals, not the compatibility wrapper's.
+    """
+    from importlib import import_module
 
-    spec = importlib.util.spec_from_file_location(
-        "answerability_integration_router",
-        Path("06_retrieve_context.py"),
-    )
-    retrieval = importlib.util.module_from_spec(spec)
-    sys.modules["answerability_integration_router"] = retrieval
-    spec.loader.exec_module(retrieval)
+    retrieval = import_module("src.query.router")
 
     query = "What formations did Alpha United commonly use?"
     chunks = [

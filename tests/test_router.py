@@ -14,11 +14,19 @@ from types import SimpleNamespace
 from src.query.query_schema import StructuredQuery, StructuredResult
 from src.query.resolver import resolve as structured_resolve
 
-# Import router with proper module setup
-spec = importlib.util.spec_from_file_location("router", Path("06_retrieve_context.py"))
-router = importlib.util.module_from_spec(spec)
-sys.modules["router"] = router  # Required for dataclass resolution
-spec.loader.exec_module(router)
+# Structural Cleanup Phase A: query routing/execution now lives in
+# src.query.router (moved from 06_retrieve_context.py, which remains only
+# as a temporary compatibility wrapper). Tests that monkeypatch a
+# dependency and then call a router function which resolves that
+# dependency via its OWN module globals (e.g. execute_route() calling
+# structured_resolve()/hybrid_search()) must patch the real implementation
+# module, not the wrapper -- patching the wrapper only rebinds the
+# wrapper's copy of the name, which execute_route() never reads.
+import src.query.router as router
+# Retrieval-side helpers (_ensure_match_summary, _detect_team_style_query,
+# _detect_match_query, _load_chunks) now live in src.retrieval.search --
+# used directly by a handful of tests below for the same reason.
+import src.retrieval.search as search
 
 
 # ---------------------------------------------------------------------------
@@ -581,7 +589,7 @@ def test_comparison_result_status_matrix(monkeypatch):
 
 def test_team_style_detection_supports_passing_patterns():
     question = "What were France's passing patterns and most common formations?"
-    assert router._detect_team_style_query(question) == "France"
+    assert search._detect_team_style_query(question) == "France"
 
 
 def test_team_style_query_routes_to_semantic():
@@ -599,7 +607,7 @@ def test_team_style_query_routes_to_semantic():
 
 def test_match_query_extracts_head_to_head_final():
     question = "What were the key events in the Argentina vs France Final?"
-    assert router._detect_match_query(question) == ("Argentina", "Final")
+    assert search._detect_match_query(question) == ("Argentina", "Final")
 
 
 def test_match_summary_uses_correct_final_and_preserves_first_result(monkeypatch):
@@ -643,9 +651,9 @@ def test_match_summary_uses_correct_final_and_preserves_first_result(monkeypatch
         },
     ]
 
-    monkeypatch.setattr(router, "_load_chunks", lambda path=None: chunks)
+    monkeypatch.setattr(search, "_load_chunks", lambda path=None: chunks)
 
-    boosted = router._ensure_match_summary(
+    boosted = search._ensure_match_summary(
         "What were the key events in the Argentina vs France Final?",
         results,
         k=3,
@@ -685,9 +693,9 @@ def test_match_summary_skips_player_performance(monkeypatch):
         }
     ]
 
-    monkeypatch.setattr(router, "_load_chunks", lambda path=None: chunks)
+    monkeypatch.setattr(search, "_load_chunks", lambda path=None: chunks)
 
-    assert router._ensure_match_summary(
+    assert search._ensure_match_summary(
         "How did Messi perform against Croatia in the semi-final?",
         results,
         k=3,
@@ -711,9 +719,9 @@ def test_match_summary_skips_tournament_journey(monkeypatch):
         }
     ]
 
-    monkeypatch.setattr(router, "_load_chunks", lambda path=None: chunks)
+    monkeypatch.setattr(search, "_load_chunks", lambda path=None: chunks)
 
-    assert router._ensure_match_summary(
+    assert search._ensure_match_summary(
         "How did Morocco reach the semi-finals, and what style did they use?",
         results,
         k=5,

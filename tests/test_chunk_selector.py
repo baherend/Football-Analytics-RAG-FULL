@@ -156,17 +156,16 @@ def test_prefers_new_query_coverage_over_redundant_chunk():
     assert selected == [chunks[0], chunks[2]]
 
 def test_hybrid_search_applies_chunk_selector_before_final_top_k(monkeypatch):
-    import importlib.util
-    import sys
-    from pathlib import Path
+    """
+    Structural Cleanup Phase A: hybrid_search() and its internal
+    dependencies (bm25_search, dense_search, _ensure_*) now live in
+    src.retrieval.search (moved from 06_retrieve_context.py) -- patched
+    there directly, since hybrid_search() resolves them via that module's
+    own globals, not the compatibility wrapper's.
+    """
+    from importlib import import_module
 
-    spec = importlib.util.spec_from_file_location(
-        "chunk_selector_integration_router",
-        Path("06_retrieve_context.py"),
-    )
-    retrieval = importlib.util.module_from_spec(spec)
-    sys.modules["chunk_selector_integration_router"] = retrieval
-    spec.loader.exec_module(retrieval)
+    retrieval = import_module("src.retrieval.search")
 
     monkeypatch.setattr(
         retrieval,
@@ -209,17 +208,15 @@ def test_hybrid_search_applies_chunk_selector_before_final_top_k(monkeypatch):
     ]
 
 def test_hybrid_search_expands_siblings_before_chunk_selection(monkeypatch):
-    import importlib.util
-    import sys
-    from pathlib import Path
+    """
+    Structural Cleanup Phase A: hybrid_search() and its internal
+    dependencies now live in src.retrieval.search (moved from
+    06_retrieve_context.py) -- patched there directly, for the same reason
+    as test_hybrid_search_applies_chunk_selector_before_final_top_k above.
+    """
+    from importlib import import_module
 
-    spec = importlib.util.spec_from_file_location(
-        "sibling_expansion_integration_router",
-        Path("06_retrieve_context.py"),
-    )
-    retrieval = importlib.util.module_from_spec(spec)
-    sys.modules["sibling_expansion_integration_router"] = retrieval
-    spec.loader.exec_module(retrieval)
+    retrieval = import_module("src.retrieval.search")
 
     unrelated_chunk = {
         "chunk_id": "OTHER-DOC-part-1",
