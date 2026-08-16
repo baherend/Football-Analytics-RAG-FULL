@@ -161,15 +161,14 @@ def process_query(question: str) -> str:
     # as authoritative; semantic chunks follow as supporting narrative.
     parts = []
     sr = result.structured_result
-    has_structured = False
-    if sr and sr.status in ("resolved", "partial") and sr.explanation:
+    has_structured = prompting_mod.is_usable_structured_result(sr)
+    if has_structured:
         # Mark structured data as authoritative
         parts.append(
             "## Authoritative Data (Verified from Match Facts)\n\n"
             "The following numbers are VERIFIED and must be used EXACTLY:\n\n"
             + sr.explanation
         )
-        has_structured = True
     if result.semantic_chunks:
         parts.append(prompting_mod.format_context_for_prompt(result.semantic_chunks))
 
@@ -201,7 +200,7 @@ def process_query(question: str) -> str:
             answer = f"[LLM Error: {e}]\n\nRetrieved context ({len(context)} chars, showing first 2000):\n{context[:2000]}..."
 
     # Step 6: Validate answer against structured facts
-    if sr and sr.status in ("resolved", "partial") and sr.explanation:
+    if has_structured:
         try:
             from prompting import validate_answer
             validation = validate_answer(

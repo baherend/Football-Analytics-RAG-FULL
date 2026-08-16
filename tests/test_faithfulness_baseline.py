@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 from src.artifacts import ArtifactPaths
 from src.conversation_memory import ConversationMemory
+from src.query.query_schema import ComparisonResult, ComparisonValue
 from src.retrieval.answerability import AnswerabilityAssessment
 
 prompting = import_module("07_prompting")
@@ -487,3 +488,252 @@ def test_answer_question_pure_semantic_skips_structured_validation(monkeypatch):
         "pure semantic query with no structured_result."
     )
     assert answer == "The match finished 3-2 after a late winner."
+
+
+def test_answer_question_blocks_incomplete_partial_comparison(monkeypatch):
+    """
+    Comparison Engine Step 2H: a ComparisonResult with one entity missing
+    a usable value gets status="partial" (Step 2G) -- but
+    is_unsupported_query()'s existing status in ("resolved", "partial")
+    check treats "partial" identically to a fully "resolved" result, so
+    this incomplete two-sided comparison is currently presented to the
+    LLM as fully authoritative structured evidence ("VERIFIED and must be
+    used EXACTLY") even though the comparison itself cannot actually be
+    completed (difference/outcome are both None -- Step 2F already
+    proved neither is fabricated). When semantic evidence is also
+    unanswerable, this must trigger the same deterministic refusal an
+    unsupported query already gets, not reach generation.
+    """
+    retrieval = import_module("06_retrieve_context")
+    selected = ArtifactPaths(2, 27)
+
+    incomplete_comparison = ComparisonResult(
+        status="partial",
+        metric="goals",
+        values=[
+            ComparisonValue(entity_name="Alpha Player", value=10),
+            ComparisonValue(entity_name="Beta Player", value=None),
+        ],
+        explanation="Alpha Player: 10. | Beta Player: No data available.",
+    )
+    unanswerable = AnswerabilityAssessment(
+        status="unanswerable", matched_terms=(), missing_terms=("beta", "player"),
+    )
+
+    monkeypatch.setattr(
+        retrieval,
+        "route_and_execute",
+        lambda q, artifact_paths=None: SimpleNamespace(
+            structured_result=incomplete_comparison,
+            semantic_chunks=[],
+            context="Alpha Player: 10. | Beta Player: No data available.",
+            answerability=unanswerable,
+        ),
+    )
+
+    generation_calls = []
+    monkeypatch.setattr(
+        prompting,
+        "ask_groq",
+        lambda *a, **kw: (generation_calls.append(1), "should not be generated")[1],
+    )
+
+    answer, _ = prompting.answer_question(
+        "Who scored more goals, Alpha Player or Beta Player?",
+        api_key="test-key",
+        artifact_paths=selected,
+    )
+
+    assert not generation_calls, (
+        "answer_question() invoked the LLM for an incomplete comparison (one "
+        "entity has no value) even though semantic evidence was also "
+        "unanswerable -- an incomplete comparison must not be treated as "
+        "fully authoritative structured evidence."
+    )
+    assert answer == prompting.INSUFFICIENT_CONTEXT_MESSAGE
+
+
+def test_chat_process_query_blocks_incomplete_partial_comparison(monkeypatch):
+    """
+    Comparison Engine Step 2H, CLI parity: chat.py::process_query() must
+    apply the exact same completeness-aware usability rule as
+    answer_question() (both now delegate to the shared
+    prompting_mod.is_usable_structured_result()) -- an incomplete
+    "partial" comparison must not behave differently between the two
+    generation entry points.
+    """
+    chat = import_module("chat")
+    selected = ArtifactPaths(2, 27)
+    chat.state.artifact_paths = selected
+    chat.state.memory = ConversationMemory()
+    chat.state.mode = "hybrid"
+
+    incomplete_comparison = ComparisonResult(
+        status="partial",
+        metric="goals",
+        values=[
+            ComparisonValue(entity_name="Alpha Player", value=10),
+            ComparisonValue(entity_name="Beta Player", value=None),
+        ],
+        explanation="Alpha Player: 10. | Beta Player: No data available.",
+    )
+    unanswerable = AnswerabilityAssessment(
+        status="unanswerable", matched_terms=(), missing_terms=("beta", "player"),
+    )
+
+    monkeypatch.setattr(
+        chat.router_mod,
+        "route_query",
+        lambda q, artifact_paths=None: SimpleNamespace(
+            path="hybrid", confidence=0.9, reason="test", semantic_query=q,
+        ),
+    )
+    monkeypatch.setattr(
+        chat.router_mod,
+        "execute_route",
+        lambda route, semantic_k=5, artifact_paths=None: SimpleNamespace(
+            structured_result=incomplete_comparison,
+            semantic_chunks=[],
+            answerability=unanswerable,
+        ),
+    )
+
+    generation_calls = []
+    monkeypatch.setattr(
+        chat.prompting_mod,
+        "generate_answer",
+        lambda *a, **kw: (generation_calls.append(1), "should not be generated")[1],
+        raising=False,
+    )
+
+    answer = chat.process_query("Who scored more goals, Alpha Player or Beta Player?")
+
+    assert not generation_calls, (
+        "chat.process_query() invoked the LLM for an incomplete comparison "
+        "(one entity has no value) even though semantic evidence was also "
+        "unanswerable."
+    )
+    assert answer == chat.prompting_mod.INSUFFICIENT_CONTEXT_MESSAGE
+
+
+def test_answer_question_complete_partial_comparison_remains_usable(monkeypatch):
+    """
+    Comparison Engine Step 2H safety boundary: a "partial" comparison is
+    not automatically incomplete -- when both entities produced a real
+    numeric value (the partial status came from one underlying entity's
+    own StructuredResult, e.g. a dropped filter, not from a missing
+    side), the comparison must remain usable structured evidence. It
+    must not be blocked merely because its status string is "partial",
+    and its status must not be silently upgraded to "resolved".
+    """
+    retrieval = import_module("06_retrieve_context")
+    selected = ArtifactPaths(2, 27)
+
+    complete_partial_comparison = ComparisonResult(
+        status="partial",
+        metric="goals",
+        values=[
+            ComparisonValue(entity_name="Alpha Player", value=10),
+            ComparisonValue(entity_name="Beta Player", value=20),
+        ],
+        explanation="Alpha Player: 10 (Note: could not apply filter(s): period). | Beta Player: 20.",
+    )
+    # Even if semantic answerability looks unanswerable, a usable
+    # structured result must take precedence (the same boundary Steps
+    # 1-2G already established) -- confirms this isn't blocked "for the
+    # right reason" (structured usability), not by coincidence.
+    unanswerable = AnswerabilityAssessment(
+        status="unanswerable", matched_terms=(), missing_terms=("x",),
+    )
+
+    monkeypatch.setattr(
+        retrieval,
+        "route_and_execute",
+        lambda q, artifact_paths=None: SimpleNamespace(
+            structured_result=complete_partial_comparison,
+            semantic_chunks=[],
+            context="Alpha Player: 10. | Beta Player: 20.",
+            answerability=unanswerable,
+        ),
+    )
+
+    generation_calls = []
+    monkeypatch.setattr(
+        prompting,
+        "ask_groq",
+        lambda *a, **kw: (generation_calls.append(1), "Alpha Player: 10, Beta Player: 20.")[1],
+    )
+
+    answer, _ = prompting.answer_question(
+        "Who scored more goals, Alpha Player or Beta Player?",
+        api_key="test-key",
+        artifact_paths=selected,
+    )
+
+    assert generation_calls, (
+        "answer_question() blocked a complete comparison (both entities have "
+        "usable values) merely because its status is 'partial' -- a partial "
+        "status with both values present must remain usable structured evidence."
+    )
+    assert complete_partial_comparison.status == "partial", (
+        "complete_partial_comparison.status was mutated -- a complete comparison "
+        "with an underlying partial caveat must not be silently upgraded to "
+        "'resolved'."
+    )
+    assert [v.value for v in complete_partial_comparison.values] == [10, 20]
+
+
+def test_answer_question_ordinary_partial_structured_result_remains_usable(monkeypatch):
+    """
+    Comparison Engine Step 2H non-regression: an ordinary single-entity
+    StructuredResult(status="partial", aggregated_value=<number>) --
+    e.g. a real value with a dropped-filter caveat, per
+    src/query/resolver.py -- must keep its existing usable/authoritative
+    behavior. The new completeness rule is comparison-specific (detected
+    via the presence of a `.values` list) and must not affect ordinary
+    structured results, which have no `.values` attribute at all.
+    """
+    retrieval = import_module("06_retrieve_context")
+    selected = ArtifactPaths(2, 27)
+
+    ordinary_partial = SimpleNamespace(
+        status="partial",
+        aggregated_value=10,
+        explanation="Alpha Player's total minutes is 10 (Note: could not apply filter(s): period).",
+        dropped_filters=["period"],
+        data=[],
+    )
+    unanswerable = AnswerabilityAssessment(
+        status="unanswerable", matched_terms=(), missing_terms=("x",),
+    )
+
+    monkeypatch.setattr(
+        retrieval,
+        "route_and_execute",
+        lambda q, artifact_paths=None: SimpleNamespace(
+            structured_result=ordinary_partial,
+            semantic_chunks=[],
+            context=ordinary_partial.explanation,
+            answerability=unanswerable,
+        ),
+    )
+
+    generation_calls = []
+    monkeypatch.setattr(
+        prompting,
+        "ask_groq",
+        lambda *a, **kw: (generation_calls.append(1), "Alpha Player played 10 minutes.")[1],
+    )
+
+    answer, _ = prompting.answer_question(
+        "How many minutes did Alpha Player play in the first half?",
+        api_key="test-key",
+        artifact_paths=selected,
+    )
+
+    assert generation_calls, (
+        "answer_question() blocked an ordinary partial StructuredResult with a "
+        "real aggregated_value -- this is the pre-existing, unrelated 'usable "
+        "value with a scope caveat' contract and must not be affected by the "
+        "comparison-specific completeness rule."
+    )
