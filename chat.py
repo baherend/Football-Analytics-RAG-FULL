@@ -78,6 +78,7 @@ class ChatState:
         self.last_context: str = ""
         self.last_route: str = ""
         self.last_prompt: str = ""
+        self.last_citations: list[dict] = []
         self.show_context: bool = False
         self.show_route: bool = False
         self.history: list[dict] = []  # [{"role": "user/assistant", "content": ...}]
@@ -191,13 +192,21 @@ def process_query(question: str) -> str:
 
     # Step 5: Generate answer
     state.history.append({"role": "user", "content": question})
+    citations: list[dict] = []
     if prompting_mod.is_unsupported_query(sr, getattr(result, "answerability", None)):
+        # No citation list for the deterministic refusal, even if evidence
+        # was retrieved -- it was judged insufficient, so showing it here
+        # would misleadingly imply it supports an answer it does not.
         answer = prompting_mod.INSUFFICIENT_CONTEXT_MESSAGE
     else:
         try:
             answer = prompting_mod.generate_answer(prompt, model=state.model)
         except Exception as e:
             answer = f"[LLM Error: {e}]\n\nRetrieved context ({len(context)} chars, showing first 2000):\n{context[:2000]}..."
+        else:
+            citations = prompting_mod.build_user_citations(
+                sr if has_structured else None, result.semantic_chunks,
+            )
 
     # Step 6: Validate answer against structured facts
     if has_structured:
@@ -212,6 +221,7 @@ def process_query(question: str) -> str:
             # Validation is best-effort — don't break the pipeline
             pass
 
+    state.last_citations = citations
     state.history.append({"role": "assistant", "content": answer})
     # Trim history to max size
     if len(state.history) > state.max_history * 2:
@@ -258,6 +268,9 @@ def interactive_mode():
             print(f"Question: {user_input}")
             print_separator()
             print(f"Answer:\n{answer}")
+            sources_block = prompting_mod.render_citations_cli(state.last_citations)
+            if sources_block:
+                print(f"\n{sources_block}")
             print_separator()
 
             # Optionally show context/route
@@ -284,6 +297,9 @@ def single_question_mode(question: str):
     answer = process_query(question)
 
     print(f"Answer:\n{answer}")
+    sources_block = prompting_mod.render_citations_cli(state.last_citations)
+    if sources_block:
+        print(f"\n{sources_block}")
     print_separator()
 
     print(f"Context:\n{state.last_context}")

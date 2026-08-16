@@ -21,7 +21,9 @@ from types import SimpleNamespace
 
 from src.artifacts import ArtifactPaths
 from src.conversation_memory import ConversationMemory
-from src.query.query_schema import ComparisonResult, ComparisonValue
+from src.query.query_schema import (
+    ComparisonResult, ComparisonValue, StructuredQuery, StructuredResult,
+)
 from src.retrieval.answerability import AnswerabilityAssessment
 
 prompting = import_module("07_prompting")
@@ -913,3 +915,213 @@ def test_validate_comparison_answer_cases():
             assert validation.corrected_answer, (
                 "an invalid comparison answer must produce a deterministic correction"
             )
+
+
+# ---------------------------------------------------------------------------
+# User-Facing Citations
+# ---------------------------------------------------------------------------
+
+
+def test_answer_question_exposes_semantic_sources_to_user(monkeypatch):
+    """
+    User-facing citations gap: answer_question() already retrieves semantic
+    chunks with a stable chunk_id/document_id and uses them to build the
+    LLM's context (format_context_for_prompt() -- the internal [Source N]
+    markers), but the function's second return value historically was just
+    the raw semantic_chunks list -- never surfaced as anything a caller
+    could render as a clean, human-readable "Sources" section, and never
+    populated at all for a structured-only answer (see the comparison/
+    structured-citation tests below).
+
+    This test exercises the real answer_question() production boundary
+    (not an internal formatter) with a deterministic fake retrieved chunk
+    and a stubbed LLM call, and asserts the returned citation list traces
+    back to the exact chunk actually used for generation.
+    """
+    prompting = import_module("07_prompting")
+    retrieval = import_module("06_retrieve_context")
+    selected = ArtifactPaths(2, 27)
+
+    chunk = {
+        "chunk_id": "MATCH-1-chunk-0",
+        "text": "Example FC beat Example United 2-1 on a rainy afternoon.",
+        "metadata": {"document_id": "MATCH-1", "level": "1", "match_id": 1},
+    }
+    answerable = AnswerabilityAssessment(
+        status="answerable", matched_terms=("example",), missing_terms=(),
+    )
+
+    monkeypatch.setattr(
+        retrieval,
+        "route_and_execute",
+        lambda q, artifact_paths=None: SimpleNamespace(
+            structured_result=None,
+            semantic_chunks=[chunk],
+            context="Example FC beat Example United 2-1.",
+            answerability=answerable,
+        ),
+    )
+    monkeypatch.setattr(prompting, "ask_groq", lambda *a, **kw: "Example FC won 2-1.")
+
+    answer, citations = prompting.answer_question(
+        "How did the match between Example FC and Example United go?",
+        api_key="test-key",
+        artifact_paths=selected,
+    )
+
+    assert answer == "Example FC won 2-1."
+    # Not just "the raw chunk dict is echoed back" (a bare chunk already has
+    # a chunk_id key, so that alone proves nothing) -- a genuine citation
+    # must be a distinct, labeled representation: tagged "semantic" and
+    # carrying a human-readable label, neither of which exists on the raw
+    # retrieved-chunk dict today.
+    matches = [c for c in citations if c.get("chunk_id") == "MATCH-1-chunk-0"]
+    assert matches, (
+        "answer_question() did not expose the retrieved chunk (chunk_id="
+        f"'MATCH-1-chunk-0') as a user-facing citation at all; got citations={citations!r}"
+    )
+    citation = matches[0]
+    assert citation.get("type") == "semantic", (
+        f"citation for a retrieved chunk must be tagged type='semantic', got {citation!r}"
+    )
+    assert citation.get("label"), (
+        f"citation must carry a human-readable label, got {citation!r}"
+    )
+
+
+def test_build_user_citations_structured_only_has_no_fake_semantic_entry():
+    """B: an ordinary structured-only result must produce exactly one
+    structured citation and no semantic citation invented from nothing."""
+    prompting = import_module("07_prompting")
+    sr = StructuredResult(
+        status="resolved",
+        query=StructuredQuery(intent="numeric", entity="player", metric="goals", entity_name="Harry Kane"),
+        aggregated_value=25,
+        explanation="Harry Kane's total goals is 25.",
+    )
+
+    citations = prompting.build_user_citations(sr, semantic_chunks=None)
+
+    assert len(citations) == 1, f"expected exactly one citation, got {citations!r}"
+    assert citations[0]["type"] == "structured"
+    assert "Harry Kane" in citations[0]["label"]
+    assert "goals" in citations[0]["label"]
+    assert not any(c["type"] == "semantic" for c in citations)
+
+
+def test_build_user_citations_player_comparison_represents_both_sides():
+    """C: a player comparison must expose both compared players, not just the winner."""
+    prompting = import_module("07_prompting")
+    comparison = ComparisonResult(
+        status="resolved", metric="goals",
+        values=[
+            ComparisonValue(entity_name="Harry Kane", value=25),
+            ComparisonValue(entity_name="Jamie Vardy", value=24),
+        ],
+        explanation="Harry Kane: 25 | Jamie Vardy: 24",
+    )
+
+    citations = prompting.build_user_citations(comparison, semantic_chunks=None)
+
+    assert len(citations) == 2
+    labels = [c["label"] for c in citations]
+    assert any("Harry Kane" in label for label in labels)
+    assert any("Jamie Vardy" in label for label in labels)
+    assert all(c["type"] == "structured" for c in citations)
+
+
+def test_build_user_citations_team_comparison_represents_both_sides():
+    """D: a team comparison must expose both compared teams."""
+    prompting = import_module("07_prompting")
+    comparison = ComparisonResult(
+        status="resolved", metric="goals",
+        values=[
+            ComparisonValue(entity_name="Argentina", value=15),
+            ComparisonValue(entity_name="France", value=16),
+        ],
+        explanation="Argentina: 15 | France: 16",
+    )
+
+    citations = prompting.build_user_citations(comparison, semantic_chunks=None)
+
+    assert len(citations) == 2
+    labels = [c["label"] for c in citations]
+    assert any("Argentina" in label for label in labels)
+    assert any("France" in label for label in labels)
+
+
+def test_build_user_citations_hybrid_includes_both_evidence_types():
+    """E: a hybrid answer must be able to expose structured AND semantic evidence together."""
+    prompting = import_module("07_prompting")
+    sr = StructuredResult(
+        status="resolved",
+        query=StructuredQuery(intent="numeric", entity="team", metric="goals", entity_name="Argentina"),
+        aggregated_value=15,
+        explanation="Argentina's total goals is 15.",
+    )
+    chunk = {
+        "chunk_id": "L1-match-1-chunk-0",
+        "text": "Argentina beat France on penalties.",
+        "metadata": {"document_id": "L1-match-1", "level": "1"},
+    }
+
+    citations = prompting.build_user_citations(sr, [chunk])
+
+    types = {c["type"] for c in citations}
+    assert types == {"structured", "semantic"}, (
+        f"hybrid answer must expose both evidence types, got types={types}"
+    )
+
+
+def test_build_user_citations_deduplicates_repeated_chunk():
+    """G: the same semantic chunk appearing twice in retrieved evidence
+    (e.g. via sibling expansion or comparison boosting) must be shown once."""
+    prompting = import_module("07_prompting")
+    chunk = {
+        "chunk_id": "DUPLICATE-1",
+        "text": "Repeated evidence.",
+        "metadata": {"document_id": "DUPLICATE", "level": "1"},
+    }
+
+    citations = prompting.build_user_citations(None, [chunk, dict(chunk)])
+
+    assert len(citations) == 1, f"expected deduplication to one citation, got {citations!r}"
+
+
+def test_answer_question_refusal_exposes_no_citations_even_with_retrieved_evidence(monkeypatch):
+    """F: the deterministic refusal must never carry a citation list, even
+    when semantic evidence was actually retrieved but judged insufficient --
+    showing it would misleadingly imply it supports an answer it does not."""
+    prompting = import_module("07_prompting")
+    retrieval = import_module("06_retrieve_context")
+    selected = ArtifactPaths(2, 27)
+
+    unanswerable = AnswerabilityAssessment(
+        status="unanswerable", matched_terms=(), missing_terms=("capital", "france"),
+    )
+
+    monkeypatch.setattr(
+        retrieval,
+        "route_and_execute",
+        lambda q, artifact_paths=None: SimpleNamespace(
+            structured_result=None,
+            semantic_chunks=[{
+                "chunk_id": "X-1", "text": "Irrelevant retrieved text.",
+                "metadata": {"level": "1"},
+            }],
+            context="Irrelevant retrieved text.",
+            answerability=unanswerable,
+        ),
+    )
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("ask_groq must not be called for a refused answer")
+
+    monkeypatch.setattr(prompting, "ask_groq", _fail_if_called)
+
+    answer, citations = prompting.answer_question(
+        "What is the capital of France?", api_key="test-key", artifact_paths=selected,
+    )
+
+    assert answer == prompting.INSUFFICIENT_CONTEXT_MESSAGE
+    assert citations == [], f"refusal must not expose citations, got {citations!r}"

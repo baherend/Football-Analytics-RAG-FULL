@@ -187,16 +187,37 @@ elif st.session_state.dataset_key != dataset_key:
     st.session_state.messages = []
     st.session_state.memory = ConversationMemory()
 
+# ---------------------------------------------------------------------------
+# Citation rendering
+# ---------------------------------------------------------------------------
+#
+# `citations` (returned by rag.answer_question() as its second value) is the
+# same machine-readable evidence list chat.py's CLI renders -- built once by
+# rag.build_user_citations(), never re-derived here. Only the display
+# differs between the two interfaces (see rag.group_citations()).
+
+
+def render_citations(citations: list[dict]) -> None:
+    if not citations:
+        return
+    structured, semantic = rag.group_citations(citations)
+    with st.expander("📚 Sources"):
+        if structured:
+            st.markdown("**Structured evidence**")
+            for c in structured:
+                st.markdown(f"- {c['label']}")
+        if semantic:
+            st.markdown("**Supporting evidence**")
+            for c in semantic:
+                suffix = f" — chunk `{c['chunk_id']}`" if c.get("chunk_id") else ""
+                st.markdown(f"- {c['label']}{suffix}")
+
+
 # Display chat history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
-        if msg.get("sources"):
-            with st.expander("📚 Sources"):
-                for src in msg["sources"]:
-                    meta = src.get("metadata", {})
-                    st.markdown(f"**[{meta.get('level', '?')}]** {src['text'][:300]}...")
-                    st.caption(f"Score: {src.get('rrf_score', src.get('score', 0)):.4f}")
+        render_citations(msg.get("citations") or [])
 
 # Chat input
 if question := st.chat_input("Ask about the selected competition and season..."):
@@ -207,7 +228,7 @@ if question := st.chat_input("Ask about the selected competition and season...")
     # Generate answer
     with st.chat_message("assistant"):
         with st.spinner("Retrieving context and generating answer..."):
-            answer, sources = rag.answer_question(
+            answer, citations = rag.answer_question(
                 question,
                 api_key=rag.GROQ_API_KEY,
                 model=model,
@@ -215,30 +236,14 @@ if question := st.chat_input("Ask about the selected competition and season...")
                 memory=st.session_state.memory,
             )
             st.markdown(answer)
-
-            if sources:
-                with st.expander("📚 Sources"):
-                    for src in sources:
-                        meta = src.get("metadata", {})
-                        level = meta.get("level", "?")
-                        player = meta.get("player_name", "")
-                        team = meta.get("team_name", "")
-                        label = f"Level {level}"
-                        if player:
-                            label += f" · {player}"
-                        if team:
-                            label += f" · {team}"
-                        st.markdown(f"**[{label}]**")
-                        st.markdown(f"> {src['text'][:400]}")
-                        score_key = "rrf_score" if "rrf_score" in src else "score"
-                        st.caption(f"Relevance score: {src.get(score_key, 0):.4f}")
+            render_citations(citations)
 
     # Store messages
     st.session_state.messages.append({"role": "user", "content": question})
     st.session_state.messages.append({
         "role": "assistant",
         "content": answer,
-        "sources": sources,
+        "citations": citations,
     })
 
 # Example questions (shown when chat is empty)
