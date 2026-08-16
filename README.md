@@ -238,6 +238,22 @@ Faithfulness regression: 9 dedicated tests passed; 82 relevant regression tests 
 
 > Scope: general semantic claim verification such as LLM-as-judge, NLI-based hallucination detection, or sentence-level claim verification is not part of the current production scope.
 
+### Comparison Engine
+
+The current comparison core supports two-player, single-metric structured comparisons (for example, "Who scored more goals, Harry Kane or Jamie Vardy?" or "Compare Messi and Mbappe by assists").
+
+- Comparison entities are extracted generically from the query, with clean names free of trailing metric-clause contamination (e.g. a stray "by goals").
+- The requested metric is preserved and resolved against the existing metric vocabulary; an explicitly requested but unsupported metric is never silently treated as goals.
+- Each comparison produces a machine-readable result holding both entities' authoritative structured values, a deterministic non-negative difference, and a deterministic outcome (entity A higher, entity B higher, or tie) - computed from verified structured values, not inferred by the LLM.
+- Result status (`resolved` / `partial` / `empty`) reflects how completely the comparison is backed by structured evidence. An incomplete comparison, where one side has no usable value, does not cross the fully-authoritative generation boundary.
+- Generated comparison answers are checked against the structured result: an explicit wrong winner, wrong entity value, wrong stated difference, or a false winner claim over an actual tie is corrected before the final answer is returned. CLI and Streamlit share the same validation path.
+
+Example (EPL 2015/16, competition `2`, season `27`): Harry Kane = 25 goals, Jamie Vardy = 24 goals, difference = 1, Harry Kane higher - a functional structured-comparison validation example, not a benchmark evaluation.
+
+Faithfulness test suite, including comparison-specific coverage: **16 tests passed** (not the full repository test count).
+
+> Scope: the current comparison core supports two-player, single-metric structured comparisons. Team comparison and multi-metric comparison are not yet implemented.
+
 ### Development Roadmap
 
 Completed:
@@ -247,10 +263,20 @@ Completed:
 - Structured query correctness
 - Chunking / Retrieval Quality
 - Faithfulness / Grounded Generation
+- Two-player / One-metric Comparison Engine Core
 
 Next:
 
-- Comparison Engine
+- Multi-Source Football Data Ingestion
+- Common Football Schema
+- Provenance and Freshness
+- Source Adapters
+- Current-season API / Web ingestion
+- Incremental updates
+- Multi-source retrieval and evaluation
+- Team comparison
+- Multi-metric comparison
+- Temporal analytics
 - User interface refinement
 - Final documentation
 
