@@ -434,6 +434,76 @@ def _resolve_team_name(name: str, data: dict) -> str | None:
     return None
 
 
+def resolve_entity_type(
+    name: str,
+    data: dict | None = None,
+    data_path: Path | None = None,
+) -> str | None:
+    """
+    Determine whether `name` is a known player or team in the selected
+    dataset, reusing the exact same name-resolution logic structured
+    queries already use (_resolve_player_name / _resolve_team_name) --
+    no separate name-matching heuristic.
+
+    Returns "player", "team", or None if `name` resolves as neither, or
+    ambiguously as both -- callers must never guess a precedence in the
+    ambiguous case.
+
+    `data_path` selects which match_facts.json to load when `data` is not
+    supplied explicitly, mirroring resolve()'s own data_path/DATA_PATH
+    fallback (see resolve()'s docstring) -- so entity-type detection always
+    checks the same dataset a subsequent resolve() call would use.
+    """
+    if data is None:
+        load_path = data_path if data_path is not None else DATA_PATH
+        data = _load_data(load_path)
+
+    is_player = _resolve_player_name(name, data) is not None
+    is_team = _resolve_team_name(name, data) is not None
+
+    if is_player and not is_team:
+        return "player"
+    if is_team and not is_player:
+        return "team"
+    return None
+
+
+def _team_records_with_derived_goals(team_records: list[dict], match_facts: list[dict]) -> list[dict]:
+    """
+    team_match_facts records carry no "goals" field -- goals scored is
+    authoritatively recorded once per match on match_facts's home_score/
+    away_score (StatsBomb's own final score), not per team. Without this,
+    _read_metric_from_record()'s generic STORED-metric read
+    (`record.get("goals", 0)`) silently returns 0 for every team record,
+    indistinguishable from a genuine 0.
+
+    Returns a copy of `team_records`, each augmented with a "goals" field
+    derived by matching match_id + team identity against `match_facts` and
+    selecting home_score or away_score for whichever side the team played.
+    Every other field is left untouched, so the existing generic STORED
+    aggregation (_read_metric_from_record/_aggregate) handles "goals" for
+    teams exactly like any other real stored field -- no separate
+    aggregation path, no comparison-specific logic.
+
+    A record whose match can't be cross-referenced (should not occur with
+    consistent artifacts) is left without a "goals" key, preserving the
+    prior "missing field" behavior for that record only.
+    """
+    matches_by_id = {m.get("match_id"): m for m in match_facts}
+    enriched = []
+    for record in team_records:
+        new_record = dict(record)
+        match = matches_by_id.get(record.get("match_id"))
+        if match is not None:
+            team_name = record.get("team_name")
+            if team_name == match.get("home_team"):
+                new_record["goals"] = match.get("home_score")
+            elif team_name == match.get("away_team"):
+                new_record["goals"] = match.get("away_score")
+        enriched.append(new_record)
+    return enriched
+
+
 # ---------------------------------------------------------------------------
 # Resolver
 # ---------------------------------------------------------------------------
@@ -584,7 +654,7 @@ def resolve(
     elif query.entity == "match":
         records = data["match_facts"]
     elif query.entity == "team":
-        records = data["team_match_facts"]
+        records = _team_records_with_derived_goals(data["team_match_facts"], data["match_facts"])
     else:
         return StructuredResult(
             status="empty",

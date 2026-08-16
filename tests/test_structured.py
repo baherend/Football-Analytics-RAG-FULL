@@ -170,11 +170,12 @@ def test_top_3_scorers(data):
 
 
 def test_team_total_goals(data):
-    """Which team scored the most goals? → Argentina (15)
-
-    TeamMatchFacts does not store per-team goal counts directly. Goals are
-    player-level metrics. This test verifies the resolver returns a sensible
-    (partial) result when querying a metric absent from team records.
+    """Sum of "goals" across every team_match_facts record (no entity_name
+    filter) = total goals scored across the whole tournament, since each
+    team's record now carries its derived goals value (see
+    test_team_goals_are_derived_from_authoritative_match_scores below) and
+    every match contributes exactly one home-side and one away-side record.
+    Not a per-team superlative (that would use intent="superlative").
     """
     q = StructuredQuery(
         intent="aggregation",
@@ -184,8 +185,76 @@ def test_team_total_goals(data):
         limit=1,
     )
     result = resolve(q, data)
-    # goals is not a field on TeamMatchFacts — resolver returns 0 or partial
-    assert result.status in ("resolved", "partial")
+    assert result.status == "resolved", f"status={result.status}, explanation={result.explanation!r}"
+    # Cross-check against match_facts's own authoritative home_score/away_score
+    # totals, independent of the team-record derivation path.
+    expected_total = sum(
+        (m.get("home_score") or 0) + (m.get("away_score") or 0)
+        for m in data["match_facts"]
+    )
+    assert result.aggregated_value == expected_total, (
+        f"aggregated_value={result.aggregated_value!r} != "
+        f"sum(home_score + away_score) across match_facts={expected_total}"
+    )
+
+
+def test_team_goals_are_derived_from_authoritative_match_scores():
+    """
+    Team Comparison goals correctness blocker: team_match_facts records do
+    not store a "goals" field directly (see test_team_total_goals above),
+    so entity="team", metric="goals" previously silently returned 0 via
+    _read_metric_from_record()'s generic STORED-metric default
+    (`.get("goals", 0)`) -- not because the team genuinely scored 0. Team
+    goals must be derived from match_facts's authoritative home_score/
+    away_score fields, matched by match_id and team identity -- the same
+    final-score fields StatsBomb itself records -- never guessed from
+    player aggregates, semantic text, or an LLM.
+    """
+    synthetic_data = {
+        "player_match_facts": [],
+        "match_facts": [
+            {"match_id": 1, "home_team": "Alpha FC", "away_team": "Beta FC", "home_score": 2, "away_score": 0},
+            {"match_id": 2, "home_team": "Gamma FC", "away_team": "Alpha FC", "home_score": 0, "away_score": 1},
+        ],
+        "team_match_facts": [
+            {"team_id": 1, "team_name": "Alpha FC", "match_id": 1, "crosses": 5},
+            {"team_id": 1, "team_name": "Alpha FC", "match_id": 2, "crosses": 3},
+            {"team_id": 2, "team_name": "Beta FC", "match_id": 1, "crosses": 2},
+            {"team_id": 3, "team_name": "Gamma FC", "match_id": 2, "crosses": 4},
+        ],
+    }
+
+    q = StructuredQuery(
+        intent="numeric", entity="team", metric="goals",
+        aggregation="sum", entity_name="Alpha FC",
+    )
+    result = resolve(q, synthetic_data)
+
+    assert result.status == "resolved", f"status={result.status}, explanation={result.explanation!r}"
+    assert result.aggregated_value == 3, (
+        "Alpha FC scored 2 (match 1, home_score) + 1 (match 2, away_score) = 3 "
+        f"goals total, got aggregated_value={result.aggregated_value!r}"
+    )
+
+
+def test_unsupported_team_metric_is_rejected_not_defaulted_to_zero(data):
+    """
+    Missing-vs-zero safety net: "assists" is a real registered metric (valid
+    for players) but has no team-level source. Before entity-scoped
+    validation, entity="team", metric="assists" would silently resolve via
+    _read_metric_from_record()'s generic STORED default (`.get("assists", 0)`)
+    and look like an authoritative 0 for every team. It must be rejected at
+    validation time instead, the same way a genuinely unregistered metric
+    name is -- distinguishing "unsupported for this entity" from "actual
+    value is 0".
+    """
+    q = StructuredQuery(
+        intent="numeric", entity="team", metric="assists",
+        aggregation="sum", entity_name="Argentina",
+    )
+    result = resolve(q, data)
+    assert result.status == "empty", f"status={result.status}, explanation={result.explanation!r}"
+    assert "Unknown metric" in result.explanation
 
 
 # ---------------------------------------------------------------------------

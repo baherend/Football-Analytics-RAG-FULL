@@ -344,6 +344,19 @@ def validate_query(q, stage_taxonomy: StageTaxonomy | None = None) -> Validation
                     f"metric '{m}' is a ratio and cannot be summed/ranked across "
                     "matches directly; rank on a component count instead"))
 
+    # Entity-scoped metric support: REGISTERED_METRICS is shared across player
+    # and team, but not every registered metric has a real source for every
+    # entity type (e.g. "assists" has no team-level source). Without this, an
+    # unsupported team metric silently reads via the generic STORED default
+    # (.get(metric, 0)) and looks like an authoritative 0. Reject it here
+    # instead, at parse time, before it can reach the resolver.
+    entity = getattr(q, "entity", None)
+    if entity == "team":
+        for m in known:
+            if m not in ALL_TEAM_METRICS:
+                issues.append(ValidationIssue(
+                    "metric", m, f"'{m}' is not a supported team metric"))
+
     return ValidationResult(ok=not issues, issues=issues, droppable=droppable)
 
 
@@ -414,6 +427,12 @@ TEAM_NUMERIC_METRICS = {
     "crosses": {"description": "Total crosses", "type": "int", "min": 0},
     "first_shot_minute": {"description": "Minute of first shot", "type": "int", "min": 0},
     "first_goal_minute": {"description": "Minute of first goal", "type": "int", "min": 0},
+    # Not a stored TeamMatchFacts field -- derived by the resolver from
+    # match_facts's authoritative home_score/away_score (see
+    # src/query/resolver.py::_team_records_with_derived_goals). Listed
+    # here so validate_query()'s entity-scoped check below correctly
+    # treats it as a genuinely supported team metric.
+    "goals": {"description": "Goals scored", "type": "int", "min": 0},
 }
 
 ALL_TEAM_METRICS = set(TEAM_NUMERIC_METRICS.keys())

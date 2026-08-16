@@ -1366,6 +1366,162 @@ def test_execute_route_comparison_threads_persisted_stage_taxonomy_to_both_resol
     assert all(data_path == paths.match_facts for _, data_path, _ in captured)
     assert all(stage_taxonomy == taxonomy for _, _, stage_taxonomy in captured)
 
+
+def test_team_comparison_routes_both_entities_as_teams(monkeypatch, tmp_path):
+    """
+    Comparison Engine Team Comparison: execute_route()'s comparison branch
+    currently hardcodes StructuredQuery(entity="player", ...) for every
+    comparison entity -- confirmed by direct inspection of
+    06_retrieve_context.py. A comparison between two known TEAM names
+    (present in match_facts's home_team/away_team, absent from
+    player_match_facts) must resolve both entities as entity="team", not
+    silently as "player".
+    """
+    from importlib import import_module
+    from types import SimpleNamespace
+    from src.stage_taxonomy import StageTaxonomy
+
+    router = import_module("06_retrieve_context")
+    paths = ArtifactPaths(competition_id=42, season_id=1, output_root=tmp_path)
+
+    taxonomy = StageTaxonomy.discover(
+        stages=["League Phase"],
+        knockout_stages=[],
+        group_stages=[],
+    )
+
+    paths.match_facts.parent.mkdir(parents=True, exist_ok=True)
+    paths.match_facts.write_text(json.dumps({
+        "metadata": {
+            "competition_id": 42,
+            "competition_name": "Synthetic League",
+            "season_id": 1,
+            "season_name": "2025",
+            "stage_taxonomy": taxonomy.to_dict(),
+        },
+        "player_match_facts": [],
+        "match_facts": [
+            {"match_id": 1, "home_team": "Alpha FC", "away_team": "Beta FC"},
+        ],
+        "team_match_facts": [
+            {"team_id": 1, "team_name": "Alpha FC", "match_id": 1, "goals": 10},
+            {"team_id": 2, "team_name": "Beta FC", "match_id": 1, "goals": 8},
+        ],
+    }), encoding="utf-8")
+
+    captured = []
+
+    def fake_structured_resolve(query, data_path=None, stage_taxonomy=None):
+        captured.append((query.entity, query.entity_name))
+        return SimpleNamespace(
+            status="resolved",
+            explanation=f"{query.entity_name}: ok",
+            aggregated_value=1,
+            data=[],
+            dropped_filters=[],
+        )
+
+    monkeypatch.setattr(router, "structured_resolve", fake_structured_resolve)
+    monkeypatch.setattr(router, "hybrid_search", lambda *args, **kwargs: [])
+    monkeypatch.setattr(router, "assess_answerability", lambda **kwargs: None)
+
+    route = router.Route(
+        path="hybrid",
+        confidence=0.9,
+        reason="team comparison test",
+        semantic_query="Compare Alpha FC and Beta FC by goals.",
+    )
+
+    router.execute_route(route, artifact_paths=paths)
+
+    # _detect_comparison() title-cases extracted names ("Alpha FC" -> "Alpha
+    # Fc") -- pre-existing, out-of-scope entity-cleanup behavior unrelated to
+    # entity-type resolution, and resolved case-insensitively by the real
+    # resolver -- so only entity type is asserted exactly; names loosely.
+    assert [entity_type for entity_type, _ in captured] == ["team", "team"], (
+        f"execute_route() sent {captured} to structured_resolve() -- expected both "
+        "comparison entities to resolve as entity='team' (both names are known teams, "
+        "absent from player_match_facts), not the hardcoded entity='player'."
+    )
+    assert {name.lower() for _, name in captured} == {"alpha fc", "beta fc"}
+
+
+def test_mixed_player_team_comparison_does_not_fabricate_same_type(monkeypatch, tmp_path):
+    """
+    Comparison Engine Team Comparison, mixed-entity safety: a comparison
+    between one known player and one known team (e.g. "Harry Kane vs
+    Arsenal") must never be silently coerced into one guessed entity
+    type. _resolve_comparison_entity_type() falls back to "player" (the
+    long-standing prior default) whenever the two entities don't
+    unambiguously agree on a single type -- so the team-shaped side
+    legitimately resolves empty as an unknown player, rather than the
+    player-shaped side being incorrectly forced through team resolution.
+    Either way, no fabricated same-type comparison is produced.
+    """
+    from importlib import import_module
+    from types import SimpleNamespace
+    from src.stage_taxonomy import StageTaxonomy
+
+    router = import_module("06_retrieve_context")
+    paths = ArtifactPaths(competition_id=43, season_id=1, output_root=tmp_path)
+
+    taxonomy = StageTaxonomy.discover(
+        stages=["League Phase"],
+        knockout_stages=[],
+        group_stages=[],
+    )
+
+    paths.match_facts.parent.mkdir(parents=True, exist_ok=True)
+    paths.match_facts.write_text(json.dumps({
+        "metadata": {
+            "competition_id": 43,
+            "competition_name": "Synthetic League",
+            "season_id": 1,
+            "season_name": "2025",
+            "stage_taxonomy": taxonomy.to_dict(),
+        },
+        "player_match_facts": [
+            {"player_id": 1, "player_name": "Harry Kane", "team_name": "Tottenham Hotspur", "match_id": 1, "goals": 1},
+        ],
+        "match_facts": [
+            {"match_id": 1, "home_team": "Tottenham Hotspur", "away_team": "Arsenal"},
+        ],
+        "team_match_facts": [
+            {"team_id": 1, "team_name": "Arsenal", "match_id": 1, "goals": 2},
+        ],
+    }), encoding="utf-8")
+
+    captured = []
+
+    def fake_structured_resolve(query, data_path=None, stage_taxonomy=None):
+        captured.append((query.entity, query.entity_name))
+        return SimpleNamespace(
+            status="resolved", explanation=f"{query.entity_name}: ok",
+            aggregated_value=1, data=[], dropped_filters=[],
+        )
+
+    monkeypatch.setattr(router, "structured_resolve", fake_structured_resolve)
+    monkeypatch.setattr(router, "hybrid_search", lambda *args, **kwargs: [])
+    monkeypatch.setattr(router, "assess_answerability", lambda **kwargs: None)
+
+    route = router.Route(
+        path="hybrid",
+        confidence=0.9,
+        reason="mixed entity test",
+        semantic_query="Harry Kane vs Arsenal",
+    )
+
+    router.execute_route(route, artifact_paths=paths)
+
+    entity_types = {entity_type for entity_type, _ in captured}
+    assert entity_types == {"player"}, (
+        f"execute_route() sent {captured} to structured_resolve() -- a mixed "
+        "player/team comparison must fall back to the safe 'player' default "
+        "for both entities, never be coerced into 'team' for a name that is "
+        "actually a player."
+    )
+
+
 def test_chunking_import_does_not_probe_legacy_documents_when_absent(monkeypatch, tmp_path, capsys):
     import importlib
     import sys

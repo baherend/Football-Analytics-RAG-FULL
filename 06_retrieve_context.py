@@ -1071,6 +1071,7 @@ from src.query.query_schema import (
     StructuredQuery, StructuredResult, Filter, ComparisonResult, ComparisonValue,
 )
 from src.query.resolver import resolve as structured_resolve
+from src.query.resolver import resolve_entity_type
 from src.query.vocab import resolve_metric, resolve_aggregation, METRIC_SYNONYMS, AGGREGATION_SYNONYMS
 from src.stage_taxonomy import StageTaxonomy, WC2022_STAGE_TAXONOMY
 from src.extraction.match_facts import WC2022_DATASET_IDENTITY
@@ -1217,6 +1218,40 @@ def _detect_comparison_metric(query: str) -> str:
 
     phrase = match.group(1).strip()
     return resolve_metric(phrase) or phrase
+
+
+def _resolve_comparison_entity_type(
+    entity_names: list[str],
+    data_path: Path | None,
+) -> str:
+    """
+    Determine the shared structured entity type ("player" or "team") for a
+    two-entity comparison, reusing resolve_entity_type() (src/query/
+    resolver.py) -- no separate team/player-name matching heuristic.
+
+    Uses whichever type is unambiguously known when only one entity
+    resolves (e.g. "Argentina vs Nonexististan": Argentina is a known
+    team, the other name is neither a known player nor team -- treat both
+    as "team" so Argentina resolves for real and the unknown side
+    legitimately resolves empty, producing a "partial" comparison rather
+    than failing both sides as players).
+
+    Falls back to "player" -- the long-standing prior behavior -- when
+    neither entity resolves to any known type at all (preserves existing
+    behavior for names that don't exist in this dataset, which the
+    structured resolver already reports as "no player found") and when
+    the two entities resolve to genuinely DIFFERENT types (a real
+    player-vs-team pair). In the mixed case this never silently coerces
+    the comparison into one guessed type -- it simply falls through to
+    the same "player" default an unresolvable pair already used before
+    team support existed, so no fabricated same-type comparison is ever
+    produced.
+    """
+    types = [resolve_entity_type(name, data_path=data_path) for name in entity_names]
+    known_types = {t for t in types if t is not None}
+    if len(known_types) == 1:
+        return known_types.pop()
+    return "player"
 
 
 # Route types
@@ -1715,9 +1750,12 @@ def execute_route(
     comparison_entities = _detect_comparison(route.semantic_query or "")
     if route.path == "hybrid" and comparison_entities:
         comparison_metric = _detect_comparison_metric(route.semantic_query or "")
+        comparison_entity_type = _resolve_comparison_entity_type(
+            comparison_entities, data_path=match_facts_path,
+        )
         entity_results = []
         for entity_name in comparison_entities:
-            sq = StructuredQuery(intent="numeric", entity="player", metric=comparison_metric,
+            sq = StructuredQuery(intent="numeric", entity=comparison_entity_type, metric=comparison_metric,
                                  aggregation="sum", entity_name=entity_name)
             try:
                 result = structured_resolve(
