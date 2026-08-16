@@ -202,13 +202,8 @@ def process_query(question: str) -> str:
     # Step 6: Validate answer against structured facts
     if has_structured:
         try:
-            from prompting import validate_answer
-            validation = validate_answer(
-                llm_answer=answer,
-                structured_explanation=sr.explanation,
-                structured_value=sr.aggregated_value,
-                structured_metric=getattr(sr.query, "metric", None),
-            )
+            from prompting import validate_structured_answer
+            validation = validate_structured_answer(answer, sr)
             if not validation.is_valid:
                 # Contradiction detected — use corrected answer
                 answer = validation.corrected_answer or answer

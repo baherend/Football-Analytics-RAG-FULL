@@ -737,3 +737,179 @@ def test_answer_question_ordinary_partial_structured_result_remains_usable(monke
         "value with a scope caveat' contract and must not be affected by the "
         "comparison-specific completeness rule."
     )
+
+
+def test_answer_question_corrects_comparison_outcome_contradiction(monkeypatch):
+    """
+    Comparison Engine Step 2I: a complete ComparisonResult is treated as
+    fully authoritative structured evidence (Step 2H), but the existing
+    validate_answer() only understands a single scalar aggregated_value --
+    it has no notion of two entities, an outcome, or a difference. A
+    generated comparison answer that directly contradicts the
+    authoritative outcome (which entity actually scored more) currently
+    reaches the user unchanged, because validate_answer() cannot detect
+    the contradiction at all in this shape.
+    """
+    retrieval = import_module("06_retrieve_context")
+    selected = ArtifactPaths(2, 27)
+
+    comparison = ComparisonResult(
+        status="resolved",
+        metric="goals",
+        values=[
+            ComparisonValue(entity_name="Alpha Player", value=25),
+            ComparisonValue(entity_name="Beta Player", value=24),
+        ],
+        explanation="Alpha Player: Alpha Player's total goals is 25. | Beta Player: Beta Player's total goals is 24.",
+    )
+    # difference/outcome are derived automatically by ComparisonResult.__post_init__.
+    assert comparison.difference == 1
+    assert comparison.outcome == "entity_a_higher"
+
+    answerable = AnswerabilityAssessment(
+        status="answerable", matched_terms=("goals",), missing_terms=(),
+    )
+
+    monkeypatch.setattr(
+        retrieval,
+        "route_and_execute",
+        lambda q, artifact_paths=None: SimpleNamespace(
+            structured_result=comparison,
+            semantic_chunks=[],
+            context=comparison.explanation,
+            answerability=answerable,
+        ),
+    )
+
+    wrong_answer = "Beta Player scored more goals than Alpha Player."
+    monkeypatch.setattr(prompting, "ask_groq", lambda *a, **kw: wrong_answer)
+
+    answer, _ = prompting.answer_question(
+        "Who scored more goals, Alpha Player or Beta Player?",
+        api_key="test-key",
+        artifact_paths=selected,
+    )
+
+    assert answer != wrong_answer, (
+        "answer_question() returned a comparison answer that contradicts the "
+        "authoritative outcome (Alpha Player is higher, not Beta Player) "
+        "unchanged -- validate_answer() cannot validate ComparisonResult's "
+        "two-entity shape."
+    )
+    assert "alpha player" in answer.lower(), (
+        f"the corrected answer must name the actual higher entity (Alpha Player), got: {answer!r}"
+    )
+
+
+def test_chat_process_query_corrects_comparison_outcome_contradiction(monkeypatch):
+    """
+    Comparison Engine Step 2I, CLI parity: chat.py::process_query() must
+    apply the exact same comparison validation as answer_question() --
+    both now delegate to the shared prompting_mod.validate_structured_answer().
+    """
+    chat = import_module("chat")
+    selected = ArtifactPaths(2, 27)
+    chat.state.artifact_paths = selected
+    chat.state.memory = ConversationMemory()
+    chat.state.mode = "hybrid"
+
+    comparison = ComparisonResult(
+        status="resolved",
+        metric="goals",
+        values=[
+            ComparisonValue(entity_name="Alpha Player", value=25),
+            ComparisonValue(entity_name="Beta Player", value=24),
+        ],
+        explanation="Alpha Player: Alpha Player's total goals is 25. | Beta Player: Beta Player's total goals is 24.",
+    )
+    answerable = AnswerabilityAssessment(
+        status="answerable", matched_terms=("goals",), missing_terms=(),
+    )
+
+    monkeypatch.setattr(
+        chat.router_mod,
+        "route_query",
+        lambda q, artifact_paths=None: SimpleNamespace(
+            path="hybrid", confidence=0.9, reason="test", semantic_query=q,
+        ),
+    )
+    monkeypatch.setattr(
+        chat.router_mod,
+        "execute_route",
+        lambda route, semantic_k=5, artifact_paths=None: SimpleNamespace(
+            structured_result=comparison,
+            semantic_chunks=[],
+            answerability=answerable,
+        ),
+    )
+
+    wrong_answer = "Beta Player scored more goals than Alpha Player."
+    monkeypatch.setattr(
+        chat.prompting_mod, "generate_answer", lambda *a, **kw: wrong_answer, raising=False,
+    )
+
+    answer = chat.process_query("Who scored more goals, Alpha Player or Beta Player?")
+
+    assert answer != wrong_answer, (
+        "chat.process_query() returned a comparison answer that contradicts the "
+        "authoritative outcome unchanged."
+    )
+    assert "alpha player" in answer.lower(), (
+        f"the corrected answer must name the actual higher entity (Alpha Player), got: {answer!r}"
+    )
+
+
+def test_validate_comparison_answer_cases():
+    """
+    Comparison Engine Step 2I regression: the smallest meaningful safety
+    matrix for validate_comparison_answer(), calling it directly since
+    detection is pure logic given an already-computed ComparisonResult --
+    no execute_route()/answer_question() machinery needed to prove it.
+    """
+    comparison = ComparisonResult(
+        status="resolved", metric="goals",
+        values=[
+            ComparisonValue(entity_name="Alpha Player", value=25),
+            ComparisonValue(entity_name="Beta Player", value=24),
+        ],
+        explanation="Alpha Player: 25 | Beta Player: 24",
+    )
+    tie_comparison = ComparisonResult(
+        status="resolved", metric="goals",
+        values=[
+            ComparisonValue(entity_name="Alpha Player", value=10),
+            ComparisonValue(entity_name="Beta Player", value=10),
+        ],
+        explanation="Alpha Player: 10 | Beta Player: 10",
+    )
+
+    cases = [
+        # (comparison_result, generated_answer, expect_valid)
+        (comparison, "Alpha Player scored more than Beta Player.", True),           # A: correct ordering
+        (comparison, "Beta Player scored more than Alpha Player.", False),          # B: wrong ordering
+        (comparison, "Alpha Player had 25 goals and Beta Player had 24.", True),    # C: correct values
+        (comparison, "Alpha Player had 20 goals and Beta Player had 24.", False),   # D: wrong entity value
+        (comparison, "Alpha Player led Beta Player by 3 goals.", False),            # E: wrong difference
+        (tie_comparison, "Alpha Player scored more than Beta Player.", False),      # F: tie claimed as a win
+        (comparison, "Alpha Player and Beta Player had a great tournament.", True), # omission: no explicit claim
+        # Negation: interpreting a negated comparison's actual truth value
+        # would require real language understanding, which this
+        # deterministic validator intentionally does not attempt. Both
+        # negated cases below must be treated as "no clear directional
+        # claim" (an omission) rather than a literal, negation-blind
+        # pattern match -- critically, a truly correct negated statement
+        # (the second case) must never be flagged as a contradiction.
+        (comparison, "Alpha Player did not score more goals than Beta Player.", True),
+        (comparison, "Beta Player did not score more goals than Alpha Player.", True),
+    ]
+    for comparison_result, generated_answer, expect_valid in cases:
+        validation = prompting.validate_comparison_answer(generated_answer, comparison_result)
+        assert validation.is_valid == expect_valid, (
+            f"validate_comparison_answer({generated_answer!r}) against "
+            f"outcome={comparison_result.outcome!r}, difference={comparison_result.difference!r}: "
+            f"is_valid={validation.is_valid}, expected {expect_valid}"
+        )
+        if not expect_valid:
+            assert validation.corrected_answer, (
+                "an invalid comparison answer must produce a deterministic correction"
+            )
