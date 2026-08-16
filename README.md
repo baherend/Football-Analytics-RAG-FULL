@@ -37,87 +37,119 @@ python chat.py "How many goals did Messi score?"
 
 ## Project Structure
 
-```
+```text
 football-analytics-rag/
-├── 01_documents.py              # Legacy pipeline entry
-├── 02_preprocessing.py          # Text cleaning
-├── 03_chunking.py               # Document chunking
-├── 04_representation.py         # TF-IDF / BM25 indices
-├── 05_embeddings.py             # Sentence embeddings
-├── 06_create_chroma_store.py    # ChromaDB vector store
-├── 07_retrieve_context.py       # Hybrid retrieval pipeline
-├── 08_router.py                 # Query routing
-├── chat.py                      # Interactive CLI
-├── generate_documents.py        # Document generation CLI
-├── extract.py                   # Structured extraction CLI
-├── rebuild.py                   # Rebuild all artifacts
-│
-├── src/                         # Modular source code
-│   ├── cache.py                 # Model & result caching
-│   ├── extraction/              # Phase 1: Structured extraction
-│   │   ├── minutes_played.py    #   Minutes algorithm
-│   │   ├── match_facts.py       #   Schema + extraction logic
-│   │   └── extract.py           #   CLI entry point
-│   ├── rendering/               # Phase 2: Document rendering
-│   │   └── render.py            #   Pure renderer
-│   ├── query/                   # Phase 3: Structured queries
-│   │   ├── vocab.py             #   Metric/dimension vocabularies
-│   │   ├── query_schema.py      #   Query/Result schemas
-│   │   └── resolver.py          #   Query executor
-│   └── generation/              # Phase 6: LLM generation
-│       ├── prompt_builder.py    #   Prompt construction
-│       └── llm.py               #   OpenRouter integration
-│
-├── tests/                       # Unit tests
-│   ├── test_extraction.py
-│   ├── test_structured.py
-│   └── test_router.py
-│
-├── output/                      # Generated artifacts (not committed)
-│   ├── match_facts.json
-│   ├── documents.json
-│   ├── chunks.json
-│   ├── indices/
-│   ├── embeddings/
-│   └── chroma_db/
-│
-├── requirements.txt
-├── ARCHITECTURE.md
-└── README.md
+|-- 01_documents.py              # Load rendered documents
+|-- 02_preprocessing.py          # Text preprocessing and cleaning
+|-- 03_chunking.py               # Document chunking
+|-- 04_vector_representation.py  # BM25 index and sentence embeddings
+|-- 05_create_chroma_store.py    # ChromaDB vector index
+|-- 07_prompting.py              # Prompting, generation, validation, citations, and answer orchestration
+|-- chat.py                      # Interactive CLI
+|-- streamlit_app.py             # Streamlit web interface
+|-- generate_documents.py        # Document generation CLI
+|-- rebuild.py                   # Rebuild dataset artifacts
+|
+|-- src/
+|   |-- artifacts.py             # Dataset-specific artifact paths
+|   |-- cache.py                 # Model and runtime caching
+|   |-- conversation_memory.py   # Conversation state and memory
+|   |-- dataset_catalog.py       # Dataset metadata/catalog
+|   |-- stage_taxonomy.py        # Competition-stage taxonomy
+|   |
+|   |-- extraction/
+|   |   |-- extract.py           # StatsBomb extraction entry point
+|   |   |-- match_facts.py       # Structured fact extraction and validation
+|   |   `-- minutes_played.py    # Minutes-played calculation
+|   |
+|   |-- rendering/
+|   |   `-- render.py            # Structured facts to text documents
+|   |
+|   |-- retrieval/
+|   |   |-- search.py            # BM25, dense, semantic, and hybrid retrieval
+|   |   |-- answerability.py     # Deterministic answerability checks
+|   |   `-- chunk_selector.py    # Evidence-aware chunk selection
+|   |
+|   `-- query/
+|       |-- router.py            # Query classification, routing, execution, and CLI entry point
+|       |-- resolver.py          # Deterministic structured-query resolution
+|       |-- query_schema.py      # Structured query/result schemas
+|       `-- vocab.py             # Metrics and query vocabularies
+|
+|-- tests/                       # Automated regression and evaluation tests
+|-- output/                      # Generated dataset/index artifacts
+|-- requirements.txt
+|-- ARCHITECTURE.md
+`-- README.md
 ```
 
 ## Pipeline Architecture
 
-```
+Build-time (indexing) and query-time (answering) are separate flows. The
+query-time flow reads the artifacts the build-time flow produces, but
+nothing in `src/retrieval/search.py` calls anything in `src/query/router.py`
+— the router decides which path a query takes and calls into retrieval
+(and the structured resolver), never the other way around.
+
+### Build Flow (indexing)
+
+```text
 Raw StatsBomb JSON
-    │
-    ▼
-extract.py ──→ match_facts.json (structured layer)
-    │
-    ▼
-generate_documents.py ──→ documents.json (rendered text)
-    │
-    ▼
-02_preprocessing.py ──→ processed_documents.json
-    │
-    ▼
-03_chunking.py ──→ chunks.json
-    │
-    ├──→ 04_representation.py ──→ BM25/TF-IDF indices
-    │
-    └──→ 05_embeddings.py ──→ Sentence embeddings
-            │
-            ▼
-        06_create_chroma_store.py ──→ ChromaDB
-            │
-            ▼
-        07_retrieve_context.py (hybrid retrieval)
-            │
-            ▼
-        08_router.py (query routing)
-            │
-            ▼
-        chat.py (interactive CLI)
+        |
+        v
+src/extraction/extract.py
+        |
+        v
+match_facts.json
+        |
+        v
+generate_documents.py
+        |
+        v
+documents.json
+        |
+        v
+02_preprocessing.py
+        |
+        v
+processed_documents.json
+        |
+        v
+03_chunking.py
+        |
+        v
+chunks.json
+        |
+        +-------------------------------+
+        |                               |
+        v                               v
+04_vector_representation.py     05_create_chroma_store.py
+(BM25 index + embeddings)       (ChromaDB vector index)
+```
+
+### Query Flow (answering)
+
+```text
+User Query
+        |
+        v
+src/query/router.py
+        |
+        +--> src/query/resolver.py     (structured evidence)
+        |
+        +--> src/retrieval/search.py   (semantic / hybrid evidence,
+        |                               reads the BM25/Chroma indices
+        |                               the build flow produced)
+        v
+    Evidence
+        |
+        v
+07_prompting.py
+        |
+        +------+------+
+        |             |
+        v             v
+     chat.py    streamlit_app.py
 ```
 
 ## How to Run
