@@ -37,8 +37,8 @@ from src.dataset_catalog import discover_datasets
 # ---------------------------------------------------------------------------
 
 
-def import_module(name: str, path: str):
-    """Import a module from a file path."""
+def load_module_from_path(name: str, path: str):
+    """Import a module from a file path (unlike importlib.import_module, which resolves by name via sys.path)."""
     import importlib.util
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
@@ -50,14 +50,14 @@ def import_module(name: str, path: str):
 # Load modules
 print("Loading RAG pipeline...")
 try:
-    router_mod = import_module("router", "06_retrieve_context.py")
+    router_mod = load_module_from_path("router", "06_retrieve_context.py")
 except Exception as e:
     print(f"Error loading router (06_retrieve_context.py): {e}")
     print("Make sure all dependencies are installed: pip install -r requirements.txt")
     raise SystemExit(1)
 
 try:
-    prompting_mod = import_module("prompting", "07_prompting.py")
+    prompting_mod = load_module_from_path("prompting", "07_prompting.py")
 except Exception as e:
     print(f"Error loading prompting module (07_prompting.py): {e}")
     raise SystemExit(1)
