@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.retrieval.answerability import assess_answerability
+from src.context.answerability import assess_answerability
 
 
 def _chunk(chunk_id: str, text: str) -> dict:

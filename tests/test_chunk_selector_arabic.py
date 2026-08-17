@@ -1,7 +1,7 @@
 """
 test_chunk_selector_arabic.py -- Arabic-Aware Chunk Selector phase.
 
-Proves src.retrieval.chunk_selector's tokenizer recognizes Arabic-script
+Proves src.context.selection's tokenizer recognizes Arabic-script
 query/content terms (previously ASCII-only: `[a-z0-9]+`), while preserving
 exact existing English behavior and staying bounded/safe against
 adversarial input.
@@ -32,7 +32,7 @@ import time
 
 import pytest
 
-from src.retrieval.chunk_selector import (
+from src.context.selection import (
     _TOKEN_PATTERN,
     _content_terms,
     select_relevant_chunks,

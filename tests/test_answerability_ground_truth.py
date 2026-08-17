@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.retrieval.answerability import assess_answerability
+from src.context.answerability import assess_answerability
 from tests.answerability_ground_truth import (
     ANSWERABILITY_GROUND_TRUTH,
     ANSWERABILITY_GROUND_TRUTH_METADATA,

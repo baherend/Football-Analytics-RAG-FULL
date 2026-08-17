@@ -38,13 +38,17 @@ import re
 from dataclasses import dataclass
 
 from src.artifacts import ArtifactPaths
-from src.retrieval.answerability import (
+# Context Engineering (Migration Step 4): the evidence subset shown
+# downstream, and whether it suffices, now come from src/context/ rather than
+# from inside the retrieval package.
+from src.context.answerability import (
     AnswerabilityAssessment,
     assess_answerability,
 )
+from src.context.evidence import EvidencePack
+from src.context.rendering import build_context
 from src.retrieval.search import (
     _detect_team_style_query,
-    build_context,
     hybrid_search,
 )
 from src.query.query_schema import (
@@ -103,6 +107,13 @@ class RoutedResult:
     answerability: AnswerabilityAssessment | None = None
     context: str = ""
     explanation: str = ""
+    # Migration Step 4: the typed Context Engineering handoff for this result.
+    # `semantic_chunks` remains the raw list every existing consumer already
+    # reads (citations in 07_prompting.py, prompt text in chat.py) and stays
+    # byte-identical -- `evidence.to_chunks()` returns those very objects.
+    # The pack is additive: it carries the same evidence with guaranteed
+    # provenance (chunk_id/document_id per item) and entity coverage.
+    evidence: EvidencePack | None = None
 
 
 def execute_route(
@@ -238,6 +249,10 @@ def execute_route(
         except Exception as e:
             print(f"Semantic search failed: {e}")
 
+    # SELECT EVIDENCE -> ANSWERABILITY handoff. The pack wraps exactly the
+    # chunks retrieval selected -- to_chunks() hands back those same objects,
+    # so assess_answerability() sees byte-identical input to before.
+    evidence = None
     answerability = None
     if semantic_chunks is not None:
         answerability_query = (
@@ -245,9 +260,10 @@ def execute_route(
             or route.semantic_query
             or ""
         )
+        evidence = EvidencePack.from_chunks(answerability_query, semantic_chunks)
         answerability = assess_answerability(
             query=answerability_query,
-            chunks=semantic_chunks,
+            chunks=evidence.to_chunks(),
         )
 
     explanation = f"Routed to {route.path} path (confidence: {route.confidence:.2f}). "
@@ -263,6 +279,7 @@ def execute_route(
         answerability=answerability,
         context=context,
         explanation=explanation,
+        evidence=evidence,
     )
 
 

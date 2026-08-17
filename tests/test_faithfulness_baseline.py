@@ -2,7 +2,7 @@
 Faithfulness / Grounded Generation - Step 1 baseline.
 
 06_retrieve_context.py's execute_route() already computes a deterministic
-AnswerabilityAssessment (src/retrieval/answerability.py) for every semantic
+AnswerabilityAssessment (src/context/answerability.py) for every semantic
 or hybrid route and attaches it to RoutedResult.answerability. Nothing in
 the generation path (chat.py::process_query, 07_prompting.py::answer_question)
 reads that field before calling the LLM -- so a query the router itself has
@@ -24,7 +24,7 @@ from src.conversation_memory import ConversationMemory
 from src.query.query_schema import (
     ComparisonResult, ComparisonValue, StructuredQuery, StructuredResult,
 )
-from src.retrieval.answerability import AnswerabilityAssessment
+from src.context.answerability import AnswerabilityAssessment
 
 prompting = import_module("07_prompting")
 

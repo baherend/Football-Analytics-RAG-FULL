@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.retrieval.chunk_selector import select_relevant_chunks
+from src.context.selection import select_relevant_chunks
 
 
 FRANCE_TEAM_CHUNKS = [

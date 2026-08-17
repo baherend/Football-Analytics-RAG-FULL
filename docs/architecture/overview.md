@@ -1,10 +1,16 @@
 # Architecture Overview — Target Contract
 
-**Status**: contract only. Nothing in `src/` has been moved. This document
-describes where the codebase is going and why; `PROJECT_MEMORY.md` describes
-where it actually is right now. When code moves, update the "current"
-column in this document's tables — do not let this drift the way the root
-`ARCHITECTURE.md` did (see `PROJECT_MEMORY.md` → Known Bugs).
+**Status**: migration in progress — steps 1-4 of §11 are done (retrieval
+split, understanding/planning split, context engineering), steps 5-8 remain.
+Code HAS moved; §4's "today:" annotations and §11 track where each stage
+actually lives. This document describes where the codebase is going and why;
+`PROJECT_MEMORY.md` describes where it actually is right now, including the
+open compatibility/architecture debts. When code moves, update the "today:"
+annotations here — do not let this drift the way the root `ARCHITECTURE.md`
+did (see `PROJECT_MEMORY.md` → Known Bugs).
+
+§1 below is a point-in-time snapshot of the pre-migration layout, kept for
+the rationale in §2; it is deliberately not rewritten as code moves.
 
 ---
 
@@ -108,8 +114,8 @@ understanding/  -- today: src/query/intent.py (classification, comparison unders
 planning/        -- today: src/query/planning.py (Route + route_query() strategy selection); a richer plan model (evidence/coverage requirements) is still deferred, see §11 step 4
 retrieval/        -- today: src/retrieval/{bm25,dense,fusion,safeguards}.py + search.py::hybrid_search() (split done, see §11 step 2; hybrid_search() and index loading stay in search.py -- a transitional compatibility boundary, not yet renamed rag/retrieval/ -- see PROJECT_MEMORY.md's Architecture Decisions for why)
 reranking/         -- today: src/retrieval/fusion.py::rerank() (currently a no-op)
-context/            -- today: src/retrieval/chunk_selector.py + search.py::build_context()
-answerability/       -- today: src/retrieval/answerability.py
+context/            -- today: src/context/ (selection.py + rendering.py + evidence.py) -- split done, see §11 step 4
+answerability/       -- today: src/context/answerability.py
 generation/           -- today: 07_prompting.py's build_prompt/generate_answer
 verification/          -- today: 07_prompting.py's validate_answer/validate_structured_answer/validate_comparison_answer
 orchestration/          -- today: chat.py::process_query() + router.py::execute_route() (execution + the query package's transitional compatibility boundary), currently mixed together
@@ -310,9 +316,17 @@ full regression, artifact-integrity hashing).
    `ContextPlan` (evidence/coverage requirements) was deliberately NOT
    introduced: no current consumer. See `PROJECT_MEMORY.md`'s Architecture
    Decisions.
-4. **Context engineering / evidence pack** — give `chunk_selector.py` +
-   `answerability.py` a named `rag/context/` home and an explicit
-   Candidates→Evidence-Pack contract.
+4. **Context engineering / evidence pack** (done) — evidence selection,
+   rendering, and answerability moved out of `src/retrieval/` into a new
+   top-level `src/context/` package (`selection.py`, `rendering.py`,
+   `answerability.py`, `evidence.py`), with a minimal lossless `EvidencePack`
+   as the Candidates→Evidence-Pack contract. Named `src/context/` rather than
+   `rag/context/` for the same reason as steps 2-3: the `rag/` move is one
+   uniform rename of every package later. Deduplication, a token budget, and
+   compression were deliberately NOT built — measured as no-ops or without a
+   consumer; see `PROJECT_MEMORY.md`. Two OPEN debts remain: `hybrid_search()`
+   still calls the selector (retrieval → context inversion), and two divergent
+   context renderers still exist (unify in step 5).
 5. **Generation + verification split** — separate `07_prompting.py`'s prompt
    building, LLM calls, and answer validation into `rag/generation/` and
    `rag/verification/`.

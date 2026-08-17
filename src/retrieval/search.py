@@ -96,7 +96,19 @@ from src.retrieval.safeguards import (
     _find_l4_document,
     _normalize_arabic_for_matching,
 )
-from src.retrieval.chunk_selector import select_relevant_chunks
+# Context Engineering (Migration Step 4): evidence selection and context
+# rendering moved to src/context/. Two edges point that way from here:
+#
+#   * select_relevant_chunks -- called by hybrid_search()'s step 9. This is a
+#     retrieval -> context inversion (context engineering should consume
+#     retrieval output, not be called from inside it). Left in place
+#     deliberately: hybrid_search() is the single most benchmarked function in
+#     the system, and moving step 9 out to the orchestrator changes what it
+#     returns. Recorded as OPEN debt in PROJECT_MEMORY.md, not hidden.
+#   * build_context -- re-exported for existing callers and used by
+#     retrieve_context() below.
+from src.context.rendering import build_context
+from src.context.selection import select_relevant_chunks
 
 __all__ = [
     "bm25_search",
@@ -253,55 +265,6 @@ def hybrid_search(
 
     # Step 10: Return selected Top-K
     return selected
-
-
-# ---------------------------------------------------------------------------
-# Context Building (LAB 9 — unchanged)
-# ---------------------------------------------------------------------------
-
-
-def build_context(chunks: list[dict], max_length: int = 3000) -> str:
-    """
-    Build a context string from retrieved chunks.
-
-    Formats chunks with metadata and truncates to max_length.
-    """
-    if not chunks:
-        return "No relevant documents found."
-
-    context_parts = []
-    current_length = 0
-
-    for i, chunk in enumerate(chunks):
-        meta = chunk.get("metadata", {})
-        level = meta.get("level", "unknown")
-
-        # Add a stable source label that matches the generation prompt's
-        # citation contract and preserves exact chunk-level traceability.
-        header = f"[Source {i+1}: Level {level}"
-        if chunk.get("chunk_id"):
-            header += f", chunk_id={chunk['chunk_id']}"
-        if meta.get("player_name"):
-            header += f", Player: {meta['player_name']}"
-        if meta.get("team_name"):
-            header += f", Team: {meta['team_name']}"
-        if meta.get("match_id"):
-            header += f", Match: {meta['match_id']}"
-
-        # Show RRF score if available, otherwise show score
-        score_key = "rrf_score" if "rrf_score" in chunk else "score"
-        header += f", Score: {chunk.get(score_key, 0):.4f}]"
-
-        text = chunk["text"]
-        entry = f"{header}\n{text}\n"
-
-        if current_length + len(entry) > max_length:
-            break
-
-        context_parts.append(entry)
-        current_length += len(entry)
-
-    return "\n".join(context_parts)
 
 
 # ---------------------------------------------------------------------------
