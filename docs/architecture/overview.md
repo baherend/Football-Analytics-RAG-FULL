@@ -104,15 +104,15 @@ boundary, and they cross it via `infrastructure/`, not via a direct
 Online pipeline, one sub-package per stage:
 
 ```
-understanding/  -- today: src/query/router.py's classify_query() half
-planning/        -- today: implicit inside execute_route(); not a separate concept yet
+understanding/  -- today: src/query/intent.py (classification, comparison understanding) + src/query/parsing.py (StructuredQuery, filters, stage vocabulary) -- split done, see §11 step 3
+planning/        -- today: src/query/planning.py (Route + route_query() strategy selection); a richer plan model (evidence/coverage requirements) is still deferred, see §11 step 4
 retrieval/        -- today: src/retrieval/{bm25,dense,fusion,safeguards}.py + search.py::hybrid_search() (split done, see §11 step 2; hybrid_search() and index loading stay in search.py -- a transitional compatibility boundary, not yet renamed rag/retrieval/ -- see PROJECT_MEMORY.md's Architecture Decisions for why)
 reranking/         -- today: src/retrieval/fusion.py::rerank() (currently a no-op)
 context/            -- today: src/retrieval/chunk_selector.py + search.py::build_context()
 answerability/       -- today: src/retrieval/answerability.py
 generation/           -- today: 07_prompting.py's build_prompt/generate_answer
 verification/          -- today: 07_prompting.py's validate_answer/validate_structured_answer/validate_comparison_answer
-orchestration/          -- today: chat.py::process_query() + router.py::execute_route(), currently mixed together
+orchestration/          -- today: chat.py::process_query() + router.py::execute_route() (execution + the query package's transitional compatibility boundary), currently mixed together
 ```
 
 Runtime flow this layering targets:
@@ -300,8 +300,16 @@ full regression, artifact-integrity hashing).
    `hybrid_search()` orchestration + context-building; see
    `PROJECT_MEMORY.md`'s Architecture Decisions and Deferred Work for why,
    and for the removal plan.
-3. **Query understanding + planning** — split `router.py`'s classification
-   from its execution/orchestration.
+3. **Query understanding + planning** (done) — `src/query/router.py`'s
+   classification, parsing, and route selection split into `intent.py`,
+   `parsing.py`, and `planning.py`; `router.py` keeps execution
+   (`execute_route`/`route_and_execute`/CLI) and becomes the query package's
+   transitional compatibility boundary. Dependency direction is strictly
+   one-way (`router.py → planning.py → parsing.py + intent.py`) — `Route`
+   lives in `planning.py` precisely so no cycle forms. A formal
+   `ContextPlan` (evidence/coverage requirements) was deliberately NOT
+   introduced: no current consumer. See `PROJECT_MEMORY.md`'s Architecture
+   Decisions.
 4. **Context engineering / evidence pack** — give `chunk_selector.py` +
    `answerability.py` a named `rag/context/` home and an explicit
    Candidates→Evidence-Pack contract.
