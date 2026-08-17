@@ -1,0 +1,317 @@
+# Architecture Overview — Target Contract
+
+**Status**: contract only. Nothing in `src/` has been moved. This document
+describes where the codebase is going and why; `PROJECT_MEMORY.md` describes
+where it actually is right now. When code moves, update the "current"
+column in this document's tables — do not let this drift the way the root
+`ARCHITECTURE.md` did (see `PROJECT_MEMORY.md` → Known Bugs).
+
+---
+
+## 1. Current Architecture (as inspected, not as previously documented)
+
+```
+Football-Analytics-RAG-git/
+├── 01_documents.py, 02_preprocessing.py, 03_chunking.py,
+│   04_vector_representation.py, 05_create_chroma_store.py   -- offline pipeline stages
+├── generate_documents.py, rebuild.py                        -- pipeline entry points
+├── chat.py, streamlit_app.py                                 -- interfaces (CLI, web)
+├── 07_prompting.py                                            -- generation + validation + citations (940 lines, multi-responsibility)
+├── src/
+│   ├── artifacts.py, embedding_config.py, cache.py, dataset_catalog.py,
+│   │   conversation_memory.py, stage_taxonomy.py             -- flat, mixed-purpose
+│   ├── extraction/        -- raw StatsBomb JSON -> match_facts.json
+│   ├── rendering/          -- match_facts.json -> documents.json (prose)
+│   ├── query/              -- router.py (933), resolver.py (886), vocab.py (697), query_schema.py
+│   └── retrieval/          -- search.py (1244, BM25+Dense+RRF+safeguards+context), chunk_selector.py, answerability.py
+└── tests/                  -- 39 files, flat, no package structure mirrors src/
+```
+
+No `domain/`, `knowledge/`, `rag/`, `infrastructure/`, `evaluation/`, or
+`interfaces/` packages exist. The codebase already shows the *shape* of the
+target (extraction/rendering/query/retrieval are already separated
+sub-packages) but not the layering: retrieval mechanics, safeguards, and
+context-building all live in one 1244-line file; generation, validation,
+and citation-rendering all live in one 940-line top-level script;
+orchestration (`chat.py::process_query()`) directly calls low-level
+functions from both instead of going through a stable pipeline interface.
+
+## 2. Competing Options
+
+Evaluated against: maintainability, football-domain growth, multi-competition
+support, multilingual support, local/online model support, testability,
+migration risk, development complexity. Evidence drawn from the repository
+itself, not from general architecture preference.
+
+| Option | Evidence for | Evidence against | Verdict |
+|---|---|---|---|
+| **Modular Monolith** (layered packages, one process) | Repo is already a single local process (CLI + Streamlit, no network boundary between components today); the project has *already* executed 3+ successful incremental modular extractions with full regression protection (competition portability, embedding config, the `06_retrieve_context.py` → `search.py`/`router.py` split) — direct proof this migration style works in this codebase | Requires discipline to keep layer boundaries honest (no shortcut imports) | **Selected** |
+| **Feature/package-oriented** (vertical slices per feature, e.g. `structured_queries/`, `semantic_search/`, `comparison/`) | Would colocate everything about one feature | RAG here is a *shared pipeline* (retrieve→rerank→select→generate) that structured, semantic, and hybrid queries all flow through — the natural seams are pipeline stages, not features; vertical slicing would duplicate pipeline-stage code across features or force a shared-kernel anyway | Rejected |
+| **Microservices now** | Would allow independent scaling/deployment | No current multi-tenant, high-QPS, or independent-scaling requirement anywhere in the codebase or its tests; would add network/serialization boundaries to a system that is currently one local process end to end, for no evidenced benefit | Rejected — "fashionable, not evidenced" |
+| **Status quo** (numbered scripts + flat `src/`) | Zero migration risk, works today | Already causing real, observed pain: a 940-line multi-responsibility `07_prompting.py`, a 1244-line `search.py` mixing retrieval mechanics with safeguards and context-building, and a root `ARCHITECTURE.md` that drifted out of sync with reality within a few phases — direct evidence that ad-hoc structure doesn't stay documented or navigable as the system grows | Rejected |
+
+## 3. Selected Architecture
+
+**Modular Monolith**, one deployable Python process, packages organized by
+**pipeline layer** (not by feature), each with an explicit, narrow public
+interface and one-directional dependency rules (§5).
+
+```
+src/
+├── domain/          -- football concepts: Competition, Season, Stage, Match, Team, Player, Event
+├── knowledge/        -- ingestion, rendering, chunking, indexing (offline)
+├── rag/               -- understanding, planning, retrieval, reranking, context, answerability, generation, verification, orchestration (online)
+├── infrastructure/    -- cache, config, artifact paths, external clients (embedding models, LLM providers)
+├── evaluation/         -- ground truth, benchmark runners, diagnostics
+└── interfaces/          -- CLI, web UI -- thin, no business logic
+```
+
+## 4. Module Boundaries
+
+### `src/domain/football/`
+
+Football concepts as typed data, no I/O, no framework dependencies:
+`Competition`, `Season`, `Stage`, `Match`, `Team`, `Player`, `Event`,
+`StructuredStatistic`. Today these concepts exist only implicitly (as dict
+shapes and ID conventions scattered through `src/extraction/match_facts.py`,
+`src/query/query_schema.py`, `src/stage_taxonomy.py`). Target: one place
+that defines what these things *are*, independent of how they're extracted,
+rendered, or queried. Multi-competition support depends on this existing —
+it's what lets `knowledge/` and `rag/` stay competition-agnostic.
+
+### `src/knowledge/`
+
+Offline pipeline. `ingestion/` (today: `src/extraction/`) — raw source data
+→ typed domain facts. `rendering/` (today: `src/rendering/`) — domain facts
+→ natural-language documents. `chunking/` (today: `03_chunking.py`) —
+documents → retrievable chunks. `indexing/` (today: `04_vector_representation.py`
++ `05_create_chroma_store.py`) — chunks → Dense/BM25/structured-fact stores.
+Structured statistics are indexed as a first-class store here, not bolted on
+— `src/query/resolver.py`'s `FactStore` is the existing proof this already
+works, it just isn't organized under a shared `knowledge/` umbrella yet.
+
+`knowledge/indexing/` **writes** the Dense/BM25/structured-fact stores
+through the storage contracts defined in `infrastructure/` (§ below) — it
+does not expose its own ingestion/chunking/index-building internals to
+anything outside `knowledge/`. Nothing outside `knowledge/` may import
+`knowledge/ingestion/`, `knowledge/chunking/`, or `knowledge/indexing/`
+directly; the produced indexes/stores are the only thing that crosses the
+boundary, and they cross it via `infrastructure/`, not via a direct
+`rag/ -> knowledge/` import.
+
+### `src/rag/`
+
+Online pipeline, one sub-package per stage:
+
+```
+understanding/  -- today: src/query/router.py's classify_query() half
+planning/        -- today: implicit inside execute_route(); not a separate concept yet
+retrieval/        -- today: src/retrieval/search.py's bm25_search/dense_search/reciprocal_rank_fusion
+reranking/         -- today: src/retrieval/search.py::rerank() (currently a no-op)
+context/            -- today: src/retrieval/chunk_selector.py + search.py::build_context()
+answerability/       -- today: src/retrieval/answerability.py
+generation/           -- today: 07_prompting.py's build_prompt/generate_answer
+verification/          -- today: 07_prompting.py's validate_answer/validate_structured_answer/validate_comparison_answer
+orchestration/          -- today: chat.py::process_query() + router.py::execute_route(), currently mixed together
+```
+
+Runtime flow this layering targets:
+
+```
+USER QUERY
+  -> UNDERSTAND        (intent, entities, language)
+  -> PLAN               (structured vs semantic vs hybrid vs comparison)
+  -> RETRIEVE            (BM25 + Dense + structured facts)
+  -> RERANK               (currently a no-op; extension point)
+  -> SELECT EVIDENCE        (dedup, coverage, entity grounding -- chunk_selector today)
+  -> ANSWERABILITY            (enough evidence? -- answerability.py today)
+  -> enough evidence?
+       NO  -> REFINE -> RETRIEVE
+       YES -> GENERATE -> VERIFY -> FINAL ANSWER
+```
+
+Context engineering (inside SELECT EVIDENCE, expanded):
+
+```
+Candidates -> Rerank -> Deduplicate -> Coverage -> Context Budget -> Compress -> Order -> Evidence Pack
+```
+
+Principle: **smallest high-signal context, not maximum context** — this is
+already `chunk_selector.py`'s actual design intent (marginal-coverage
+selection over "return everything"), just not yet named or organized as a
+distinct pipeline stage.
+
+### `src/infrastructure/`
+
+Cross-cutting technical concerns with no football-domain knowledge:
+`src/cache.py`, `src/embedding_config.py`, `src/artifacts.py`, LLM provider
+clients (today: the HTTP/API parts of `07_prompting.py`).
+
+`infrastructure/` also defines the **stable storage/index-access
+contracts** — vector-store, lexical-index, and fact-store interfaces — that
+`knowledge/indexing/` writes through and `rag/retrieval/` reads through.
+This is the sole boundary between the offline and online pipelines: it
+holds *technical* access contracts only (open a collection, load an index,
+fetch a record by key), never football business logic (no team-style
+detection, no metric resolution, no chunk-coverage selection — those stay
+in `rag/` and `knowledge/` respectively, using domain types where typing
+is needed). Infrastructure modules may depend on `domain/` for shared
+types in these contracts, but must never import from `rag/` or
+`knowledge/`'s ingestion/chunking/indexing internals, and must never
+contain business logic itself.
+
+### `src/evaluation/`
+
+Ground truth, benchmark runners, diagnostics — today spread across
+`tests/*ground_truth*.py`, `tests/retrieval_evaluator.py`,
+`tests/multilingual_diagnostics.py`. These are already evaluation-specific
+and already isolated from production `src/` — the target just gives them a
+proper home under `src/` (or a clearly-declared parallel root) so they're
+importable without reaching into `tests/`.
+
+### `src/interfaces/`
+
+`chat.py`, `streamlit_app.py`. Thin: parse input, call one orchestration
+entry point in `rag/orchestration/`, render output. No retrieval logic, no
+prompt construction, no validation logic — those already leak into
+`chat.py::process_query()` today (structured/semantic context assembly is
+inline in the interface layer, not delegated).
+
+## 5. Dependency Rules
+
+```
+interfaces      -> rag/orchestration only
+rag/*            -> domain, infrastructure
+infrastructure    -> domain (types only, for storage contracts)
+knowledge          -> domain, infrastructure
+evaluation          -> everything (it exercises the whole system)
+domain                -> (nothing)               [lowest project-specific layer]
+```
+
+`domain/football/` is the lowest project-specific layer — every other
+layer may depend on it, it depends on nothing. **`rag/` must never depend
+on `knowledge/`.** The online runtime does not import
+`knowledge/ingestion/`, `knowledge/chunking/`, or `knowledge/indexing/`
+internals — it has no reason to know *how* an index was built. `knowledge/`
+**produces** indexes/stores; `rag/` **consumes** them, and the only thing
+that connects the two is the stable set of storage/index-access contracts
+declared in `infrastructure/` (§4). `infrastructure/` itself carries no
+business logic — it is the shared technical contract, not a place for
+football-specific rules to leak into.
+
+**Orchestration coordinates, it does not implement.** `rag/orchestration/`
+calls `understand()`, `plan()`, `retrieve()`, `rerank()`, `build_evidence()`,
+`check_answerability()`, `generate()`, `verify()` — it must never itself
+contain retrieval logic, prompt strings, or validation rules, the way
+`chat.py::process_query()` currently does. This is the single most
+important rule for this migration; violating it silently recreates the
+current 1244-line/940-line monoliths under new directory names.
+
+## 6. Project Memory Design
+
+Three files replace "re-read everything every session":
+
+- **`AGENT_RULES.md`** — stable process rules; stable and rarely changed —
+  modifications require an explicit architecture/process decision, not a
+  per-phase edit.
+- **`PROJECT_MEMORY.md`** — durable, structured, compact facts (current
+  state, decisions, milestones, baselines, bugs, security findings,
+  deferred work, constraints). Updated in place as facts change.
+- **`CURRENT_TASK.md`** — small, fully rewritten at the start of each phase.
+  Never accumulates history.
+
+Composition for any future session: **Stable Rules + retrieved relevant
+`PROJECT_MEMORY.md` section(s) + `CURRENT_TASK.md`** — not the full
+conversation history, not the full repository.
+
+## 7. Agent / Token-Efficiency Design
+
+Development-agent architecture is kept conceptually separate from the
+production RAG system (§10 below covers the production trust boundary).
+When sub-agents are used for development work:
+
+```
+Main Agent
+├── Retrieval Agent   -- retrieval-quality investigation only
+├── Code Agent         -- implementation only
+├── Security Agent       -- adversarial/injection/ReDoS review only
+└── Evaluation Agent       -- benchmark execution only
+```
+
+Each receives only the files and prior findings relevant to its role — not
+the whole repository, not the whole session history. Tool-efficiency rules
+(also captured in `AGENT_RULES.md` §6–7): grep/targeted-read over full-file
+dumps; targeted pytest node before full suite; compact command output;
+reuse `PROJECT_MEMORY.md` instead of rebuilding history by re-reading
+source or re-running already-recorded experiments.
+
+## 8. Football-Specific Adaptation
+
+This is not generic document RAG. `domain/football/` makes `Competition`,
+`Season`, `Stage`, `Match`, `Team`, `Player`, `Event`, and
+`StructuredStatistic` first-class types, not implicit dict shapes. Structured
+facts remain a first-class retrieval path alongside Dense and BM25 — never
+demoted to a fallback. Multi-competition/season support must come from
+`domain/` + `ArtifactPaths` namespacing, never from competition-specific code
+branches (the existing portability work already enforces this; the target
+architecture keeps enforcing it explicitly rather than as tribal knowledge).
+
+## 9. Optional / Extension-Point Components
+
+Not mandatory, not built now, remain pure extension points until justified
+by evaluation or a concrete use case: Graph RAG, a SQL database, *runtime*
+conversation memory (distinct from the existing dataset-scoped
+`src/conversation_memory.py`, which stays), an autonomous multi-agent
+runtime, a microservices split, tenant/auth infrastructure.
+
+## 10. Trust Boundary
+
+Retrieved documents, external/web content, and tool output are **untrusted
+data**, architecturally — not instructions, regardless of where they were
+retrieved from or how authoritative they look. `rag/generation/` and
+`rag/verification/` must treat retrieved chunk text as content to reason
+about, never as directives to follow. This is a structural requirement
+(prompt construction must keep retrieved content in a clearly-delimited data
+region, distinct from system/developer instructions), not just a prompting
+convention — see `AGENT_RULES.md` §9 for the same principle applied to agent
+work.
+
+## 11. Migration Strategy
+
+No big-bang refactor. Each step: **Baseline → Surgical migration → Targeted
+tests → Regression → RAG evaluation → Security → Review**, exactly the
+workflow already used for every phase in `PROJECT_MEMORY.md`'s Completed
+Milestones. Each step must be behavior-preserving — verified the same way
+this phase verified it (byte-identical source outside the intended change,
+full regression, artifact-integrity hashing).
+
+1. **Architecture contract** (this phase) — no code moves.
+2. **Retrieval split** — separate `rag/retrieval/` mechanics (BM25/Dense/RRF)
+   from safeguards and context-building inside today's `search.py`.
+3. **Query understanding + planning** — split `router.py`'s classification
+   from its execution/orchestration.
+4. **Context engineering / evidence pack** — give `chunk_selector.py` +
+   `answerability.py` a named `rag/context/` home and an explicit
+   Candidates→Evidence-Pack contract.
+5. **Generation + verification split** — separate `07_prompting.py`'s prompt
+   building, LLM calls, and answer validation into `rag/generation/` and
+   `rag/verification/`.
+6. **Knowledge pipeline organization** — group `extraction/`, `rendering/`,
+   `03_chunking.py`, `04_vector_representation.py`, `05_create_chroma_store.py`
+   under `knowledge/`.
+7. **Evaluation organization** — consolidate ground-truth/benchmark/
+   diagnostic modules under `evaluation/`.
+8. **Observability/cache reorganization** — only if evaluation shows it's
+   warranted; not scheduled by default.
+
+Each step is its own phase with its own `CURRENT_TASK.md`, not a checklist
+to rush through in one sitting.
+
+## 12. Not Yet Decided
+
+- Exact package for `evaluation/`: under `src/` (importable, but blurs
+  production/test boundary) or a parallel top-level root. Decide during
+  step 7, with evidence from how `tests/` actually imports from it today.
+- Whether `interfaces/` needs a shared thin abstraction over "ask a
+  question, get an answer" before `streamlit_app.py` and `chat.py` both
+  route through it, or whether each keeps its own thin orchestration call.
