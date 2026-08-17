@@ -106,8 +106,8 @@ Online pipeline, one sub-package per stage:
 ```
 understanding/  -- today: src/query/router.py's classify_query() half
 planning/        -- today: implicit inside execute_route(); not a separate concept yet
-retrieval/        -- today: src/retrieval/search.py's bm25_search/dense_search/reciprocal_rank_fusion
-reranking/         -- today: src/retrieval/search.py::rerank() (currently a no-op)
+retrieval/        -- today: src/retrieval/{bm25,dense,fusion,safeguards}.py + search.py::hybrid_search() (split done, see §11 step 2; hybrid_search() and index loading stay in search.py -- a transitional compatibility boundary, not yet renamed rag/retrieval/ -- see PROJECT_MEMORY.md's Architecture Decisions for why)
+reranking/         -- today: src/retrieval/fusion.py::rerank() (currently a no-op)
 context/            -- today: src/retrieval/chunk_selector.py + search.py::build_context()
 answerability/       -- today: src/retrieval/answerability.py
 generation/           -- today: 07_prompting.py's build_prompt/generate_answer
@@ -285,9 +285,21 @@ Milestones. Each step must be behavior-preserving — verified the same way
 this phase verified it (byte-identical source outside the intended change,
 full regression, artifact-integrity hashing).
 
-1. **Architecture contract** (this phase) — no code moves.
-2. **Retrieval split** — separate `rag/retrieval/` mechanics (BM25/Dense/RRF)
-   from safeguards and context-building inside today's `search.py`.
+1. **Architecture contract** (done) — no code moves.
+2. **Retrieval split** (done) — `src/retrieval/search.py`'s BM25/Dense/RRF/
+   safeguards split into `bm25.py`/`dense.py`/`fusion.py`/`safeguards.py`,
+   mechanically, inside `src/retrieval/` (not yet renamed to
+   `rag/retrieval/` — no other target packages exist yet, so that rename is
+   deferred to whichever step actually stands up the `rag/` namespace). A
+   `service.py` extraction of `hybrid_search()` orchestration was tried and
+   reverted on architecture review (it needed a permanent reverse
+   call-time dependency back into `search.py` to stay test-monkeypatch
+   compatible — see `PROJECT_MEMORY.md`'s Architecture Decisions for the
+   comparison). `search.py` remains `src/retrieval/`'s transitional
+   compatibility boundary: re-export layer + index loading +
+   `hybrid_search()` orchestration + context-building; see
+   `PROJECT_MEMORY.md`'s Architecture Decisions and Deferred Work for why,
+   and for the removal plan.
 3. **Query understanding + planning** — split `router.py`'s classification
    from its execution/orchestration.
 4. **Context engineering / evidence pack** — give `chunk_selector.py` +
