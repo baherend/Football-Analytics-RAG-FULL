@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from src.artifacts import ArtifactPaths, resolve_runtime_artifact_paths
+from src.embedding_config import DEFAULT_EMBEDDING_MODEL_ID
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1052,6 +1053,14 @@ class LegacyTemporaryChromaArtifactPaths:
     def chroma_collection_name(self) -> str:
         return "wc2022_documents"
 
+    @property
+    def embedding_model_id(self) -> str:
+        """The legacy flat WC2022 layout is MiniLM-only by definition --
+        see src.embedding_config. dense_search() reads this to resolve the
+        query embedding model; without it, this legacy view cannot be used
+        with dense_search()/hybrid_search() at all."""
+        return DEFAULT_EMBEDDING_MODEL_ID
+
 
 @dataclass(frozen=True)
 class TemporaryChromaArtifactPaths:
@@ -1144,6 +1153,10 @@ class TemporaryChromaArtifactPaths:
     @property
     def chroma_collection_name(self) -> str:
         return self.base.chroma_collection_name
+
+    @property
+    def embedding_model_id(self) -> str:
+        return self.base.embedding_model_id
 
 
 # ---------------------------------------------------------------------------

@@ -304,8 +304,101 @@ def rerank(results: list[dict], query: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Arabic Safeguard-Trigger Normalization
+# ---------------------------------------------------------------------------
+#
+# Light, deterministic normalization used ONLY for recognizing safeguard
+# trigger phrases below -- never applied to the query actually sent to
+# BM25/Dense retrieval. Unifies the most common Arabic spelling variants
+# (alef-hamza forms, alef maksura) so that e.g. the benchmark's "ازاي" and
+# the equally common "إزاي" both match the same trigger phrase, without
+# needing to enumerate every spelling separately.
+
+
+def _normalize_arabic_for_matching(text: str) -> str:
+    for variant in ("أ", "إ", "آ"):
+        text = text.replace(variant, "ا")
+    text = text.replace("ى", "ي")
+    # Collapse runs of whitespace (spaces/tabs/newlines) to a single space
+    # so multi-word trigger phrases (e.g. "بتلعب ازاي") still match a
+    # literal substring check when a query has irregular spacing.
+    return re.sub(r"\s+", " ", text)
+
+
+# A Latin-script span (canonical player/team name) inside an otherwise
+# Arabic query -- used to recover the entity a safeguard should boost.
+# Arabic-transliterated entity names (e.g. "ميسي") are a separate,
+# deliberately deferred problem; this phase's queries keep entities in
+# their canonical Latin form.
+#
+# Bounded to 60 characters (a generous margin over the longest real full
+# names in the dataset, e.g. "Abdulelah Saad Hameed Al-Malki" = 31 chars):
+# an earlier unbounded `[A-Za-z .'\-]*` here allowed the shared prefix
+# between the quantified class and the trailing `[A-Za-z]` to create
+# O(N) redundant backtracking splits per match attempt. Bounding it caps
+# the worst-case backtracking search space to a constant, independent of
+# input length -- verified with adversarial stress tests (see
+# tests/test_arabic_safeguards.py's ReDoS regression tests).
+_LATIN_ENTITY_SPAN = re.compile(r"[A-Za-z][A-Za-z .'\-]{0,58}[A-Za-z]|[A-Za-z]")
+
+
+def _extract_latin_entity_spans(query: str, max_entities: int = 5) -> list[str]:
+    """
+    Every distinct contiguous Latin-script span in `query`, in order of
+    first appearance, case-insensitively de-duplicated, bounded to
+    `max_entities`.
+
+    A single-entity query (e.g. gt-multi-03: "...Morocco...") returns
+    exactly one span. A genuinely multi-entity query (e.g. gt-multi-04:
+    "...Argentina وFrance...") returns all of them -- a caller must not
+    silently act on only the first when more than one is present (see
+    _detect_team_style_entities). `max_entities` bounds the amount of work
+    a pathological input can force, consistent with this module's other
+    bounded-regex hardening.
+    """
+    seen_lower: set[str] = set()
+    spans: list[str] = []
+    for match in _LATIN_ENTITY_SPAN.finditer(query):
+        span = match.group(0).strip(" .'-")
+        if len(span) <= 2:
+            continue
+        span_lower = span.lower()
+        if span_lower in seen_lower:
+            continue
+        seen_lower.add(span_lower)
+        spans.append(span)
+        if len(spans) >= max_entities:
+            break
+    return spans
+
+
+# ---------------------------------------------------------------------------
 # Comparison Entity Detection
 # ---------------------------------------------------------------------------
+
+# Normalized (post alef-substitution) MSA/Egyptian comparison markers.
+# Deliberately no bare "X و Y" fallback (unlike English's broad "X or Y"):
+# "و" is a far more common, ambiguous conjunction in Arabic than "or" is in
+# English, so an equivalent broad fallback would create excessive false
+# positives -- see test_comparison_no_false_positive_on_and_without_comparison_words.
+_AR_BETTER_WORD = r"(?:احسن|افضل)"
+# Bounded to 60 characters -- see _LATIN_ENTITY_SPAN's comment above for
+# why an unbounded quantifier here is a regex-complexity (ReDoS) risk,
+# confirmed via adversarial stress testing: the un-anchored patterns below
+# (no fixed literal prefix for re.search to fast-scan for) combine
+# re.search()'s per-position retry with this quantifier's backtracking,
+# producing O(N^2)-or-worse behavior on long non-matching input without
+# a bound.
+#
+# Greedy (not non-greedy): a trailing entity group anchored only by a
+# generic "end of phrase" marker (whitespace/؟/?/end-of-string) needs to
+# consume the FULL multi-word name greedily -- a non-greedy version stops
+# at the first word (e.g. "Lionel" instead of "Lionel Andres Messi"),
+# since bare whitespace after the first word already satisfies a
+# non-greedy trailing anchor. Greedy backtracks (bounded, so still fast)
+# to give back exactly the separator whitespace the rest of the pattern
+# needs -- confirmed correct for both single- and multi-word names.
+_AR_LATIN_ENTITY = r"[A-Za-z][A-Za-z .'\-]{0,58}"
 
 
 def _detect_comparison_entities(query: str) -> list[str]:
@@ -313,30 +406,65 @@ def _detect_comparison_entities(query: str) -> list[str]:
     Detect if a query is comparing two entities (players/teams).
 
     Returns list of entity names if comparison detected, empty list otherwise.
+    Recognizes English ("compare X and Y", "X vs Y", "who was better, X or
+    Y") and MSA/Egyptian ("قارن بين X و Y", "مين أحسن X ولا Y", "X ولا Y مين
+    كان أفضل", "مين الأفضل بين X و Y") comparison phrasing. Arabic patterns
+    match entities as bounded Latin-script spans directly (_AR_LATIN_ENTITY).
     """
     import re
 
     query_lower = query.lower().strip()
 
+    # Bounded (to 80/60/40 chars respectively -- generous for any real
+    # entity name/filler clause) for the same regex-complexity reason as
+    # _AR_LATIN_ENTITY above: these patterns have no fixed literal prefix
+    # (or, for "compare"/"who...better", the ambiguous part still follows
+    # unbounded through re.search()'s per-position retries on long
+    # non-matching input), confirmed vulnerable via adversarial stress
+    # testing for the "X vs Y" and "X or Y" patterns specifically -- the
+    # other two were bounded defensively even though not proven exploitable.
+
     # Pattern: "Compare X and Y"
-    match = re.search(r"compare\s+(.+?)\s+and\s+(.+?)(?:\s|'s|$|\?)", query_lower)
+    match = re.search(r"compare\s+(.{1,80}?)\s+and\s+(.{1,80}?)(?:\s|'s|$|\?)", query_lower)
     if match:
         return [match.group(1).strip().rstrip("'s"), match.group(2).strip().rstrip("'s")]
 
     # Pattern: "X vs Y"
-    match = re.search(r"(\w+)\s+vs\.?\s+(\w+)", query_lower)
+    match = re.search(r"(\w{1,60})\s+vs\.?\s+(\w{1,60})", query_lower)
     if match:
         return [match.group(1).strip(), match.group(2).strip()]
 
     # Pattern: "Who performed better ... X or Y"
-    match = re.search(r"who\s+(?:performed|played|did)\s+better.*?(\w+)\s+or\s+(\w+)", query_lower)
+    match = re.search(r"who\s+(?:performed|played|did)\s+better.{0,40}?(\w{1,60})\s+or\s+(\w{1,60})", query_lower)
     if match:
         return [match.group(1).strip(), match.group(2).strip()]
 
     # Pattern: "X or Y" (simple)
-    match = re.search(r"(\w+)\s+or\s+(\w+)(?:\s|$|\?)", query_lower)
+    match = re.search(r"(\w{1,60})\s+or\s+(\w{1,60})(?:\s|$|\?)", query_lower)
     if match:
         return [match.group(1).strip(), match.group(2).strip()]
+
+    # --- MSA / Egyptian comparison patterns ---
+    # `[,،]?\s+` (rather than plain `\s+`) tolerates an optional comma
+    # (Latin or Arabic) directly after an entity, e.g. "قارن بين Messi, و
+    # Mbappe" -- a natural pause a person might type before the connector.
+    normalized = _normalize_arabic_for_matching(query_lower)
+    arabic_patterns = [
+        # "قارن بين X و Y"
+        rf"قارن\s+بين\s+({_AR_LATIN_ENTITY})[,،]?\s+و\s+({_AR_LATIN_ENTITY})(?:\s|؟|\?|$)",
+        # "قارن X مع Y"
+        rf"قارن\s+({_AR_LATIN_ENTITY})[,،]?\s+مع\s+({_AR_LATIN_ENTITY})(?:\s|؟|\?|$)",
+        # "مين أحسن X ولا Y" / "مين كان أحسن X ولا Y"
+        rf"مين\s+(?:كان\s+)?{_AR_BETTER_WORD}[,،]?\s+({_AR_LATIN_ENTITY})[,،]?\s+ولا\s+({_AR_LATIN_ENTITY})(?:\s|؟|\?|$)",
+        # "X ولا Y مين كان أفضل"
+        rf"({_AR_LATIN_ENTITY})[,،]?\s+ولا\s+({_AR_LATIN_ENTITY})\s+مين\s+(?:كان\s+)?{_AR_BETTER_WORD}",
+        # "مين الأفضل بين X و Y"
+        rf"مين\s+(?:هو\s+)?ال{_AR_BETTER_WORD}\s+بين\s+({_AR_LATIN_ENTITY})[,،]?\s+و\s+({_AR_LATIN_ENTITY})(?:\s|؟|\?|$)",
+    ]
+    for pattern in arabic_patterns:
+        match = re.search(pattern, normalized)
+        if match:
+            return [match.group(1).strip(), match.group(2).strip()]
 
     return []
 
@@ -450,42 +578,84 @@ _STYLE_KEYWORDS = {
     "how they played",
 }
 
+# Normalized (post alef-substitution) MSA/Egyptian team-style/formation/
+# tactics trigger phrases. Arabic morphology means a stem like "تشكيل"
+# already appears as a substring of its inflected/definite forms
+# (التشكيل, تشكيلات, التشكيلات, ...), unlike English where "formation" and
+# "formations" needed two separate entries.
+_STYLE_KEYWORDS_AR = {
+    "اسلوب",                 # style (اسلوب اللعب, اسلوبهم, باسلوب, ...)
+    "تشكيل",                  # formation/lineup and its inflected forms
+    "خطة",                   # tactical plan (الخطة, بخطة, ...)
+    "نمط التمرير",            # passing pattern
+    "انماط التمرير",          # passing patterns
+    "لعبت ازاي",              # played how (EGY)
+    "لعبوا ازاي",             # played how, plural (EGY)
+    "بتلعب ازاي",             # is/was playing how (EGY)
+    "يلعبوا ازاي",            # they play how (EGY)
+    "كان عامل ازاي",          # was like how (EGY)
+    "لعبهم كان عامل ازاي",     # their play was like how (EGY)
+}
 
-def _detect_team_style_query(query: str) -> str | None:
-    """Return the team name for a team-style query, otherwise None."""
+
+def _detect_team_style_entities(query: str) -> list[str]:
+    """Return every team name a team-style/formation/tactics query names,
+    or [] if it isn't a team-style query at all.
+
+    English: at most one entity (unchanged, existing regex-based
+    extraction -- English multi-entity extraction is out of scope for
+    this fix; see _detect_team_style_query's docstring). MSA/Egyptian:
+    every distinct Latin-script entity found (see
+    _extract_latin_entity_spans) -- a query naming two teams (e.g. a
+    style-comparison "multi" case such as gt-multi-04) gets both, instead
+    of silently collapsing to whichever team is mentioned first."""
     query_lower = query.lower().strip()
 
-    if not any(keyword in query_lower for keyword in _STYLE_KEYWORDS):
-        return None
+    if any(keyword in query_lower for keyword in _STYLE_KEYWORDS):
+        patterns = [
+            (
+                r"^(?:what\s+(?:was|were)\s+|describe\s+|how\s+did\s+)?"
+                r"(.+?)(?:['?]s|s')\s+"
+                r"(?:passing\s+patterns?|(?:most\s+common\s+)?formations?|"
+                r"tactics|approach|(?:playing\s+)?style)\b"
+            ),
+            r"^(.+?)(?:['?]s|s')\s+(?:playing\s+)?style\b",
+            r"^(?:what\s+(?:was|were)|how\s+did)\s+(.+?)\s+play\b",
+            r"^(?:describe\s+)?(.+?)\s+(?:formations?|tactics|approach)\b",
+        ]
 
-    patterns = [
-        (
-            r"^(?:what\s+(?:was|were)\s+|describe\s+|how\s+did\s+)?"
-            r"(.+?)(?:['?]s|s')\s+"
-            r"(?:passing\s+patterns?|(?:most\s+common\s+)?formations?|"
-            r"tactics|approach|(?:playing\s+)?style)\b"
-        ),
-        r"^(.+?)(?:['?]s|s')\s+(?:playing\s+)?style\b",
-        r"^(?:what\s+(?:was|were)|how\s+did)\s+(.+?)\s+play\b",
-        r"^(?:describe\s+)?(.+?)\s+(?:formations?|tactics|approach)\b",
-    ]
+        for pattern in patterns:
+            match = re.search(pattern, query_lower)
+            if not match:
+                continue
 
-    for pattern in patterns:
-        match = re.search(pattern, query_lower)
-        if not match:
-            continue
+            team_name = match.group(1).strip(" ,.?")
+            team_name = re.sub(
+                r"^(?:what\s+(?:was|were)|how\s+did|describe)\s+",
+                "",
+                team_name,
+            ).strip()
 
-        team_name = match.group(1).strip(" ,.?")
-        team_name = re.sub(
-            r"^(?:what\s+(?:was|were)|how\s+did|describe)\s+",
-            "",
-            team_name,
-        ).strip()
+            if len(team_name) > 2:
+                return [team_name.title()]
 
-        if len(team_name) > 2:
-            return team_name.title()
+        return []
 
-    return None
+    normalized = _normalize_arabic_for_matching(query_lower)
+    if any(keyword in normalized for keyword in _STYLE_KEYWORDS_AR):
+        return [entity.title() for entity in _extract_latin_entity_spans(query)]
+
+    return []
+
+
+def _detect_team_style_query(query: str) -> str | None:
+    """Return the team name for a team-style/formation/tactics query when
+    exactly one team is named, otherwise None -- including when the query
+    names MULTIPLE teams (ambiguous which one a single-value caller should
+    use; see _detect_team_style_entities for the multi-team case, used by
+    _ensure_team_style_doc)."""
+    entities = _detect_team_style_entities(query)
+    return entities[0] if len(entities) == 1 else None
 
 
 def _ensure_team_style_doc(
@@ -495,60 +665,68 @@ def _ensure_team_style_doc(
     artifact_paths: ArtifactPaths | None = None,
 ) -> list[dict]:
     """
-    When a query asks about a team's playing style, ensure the team-level
-    analysis document is included in the top-k results.
+    When a query asks about one or more teams' playing style, ensure each
+    named team's team-level analysis document is included in the top-k
+    results. A query naming multiple teams (e.g. a style-comparison
+    "multi" case) gets each team's document, not just the first-mentioned
+    one -- see _detect_team_style_entities.
 
     `artifact_paths` selects a namespaced dataset's chunks.json instead of
     the legacy default -- see src/artifacts.py.
     """
-    team_name = _detect_team_style_query(query)
-    if not team_name:
+    team_names = _detect_team_style_entities(query)
+    if not team_names:
         return results
 
     top_k = results[:k]
-    team_lower = team_name.lower()
+    chunks = None
+    additions = []
 
-    # Check if team doc is already in top-k
-    has_team_in_topk = any(
-        r.get("metadata", {}).get("level") == "team" and
-        team_lower in (r.get("metadata", {}).get("team_name") or r.get("team_name") or "").lower()
-        for r in top_k
-    )
+    for team_name in team_names:
+        team_lower = team_name.lower()
 
-    if has_team_in_topk:
+        # Check if this team's doc is already in top-k
+        has_team_in_topk = any(
+            r.get("metadata", {}).get("level") == "team" and
+            team_lower in (r.get("metadata", {}).get("team_name") or r.get("team_name") or "").lower()
+            for r in top_k
+        )
+        if has_team_in_topk:
+            continue
+
+        if chunks is None:
+            chunks = _load_chunks(artifact_paths.chunks if artifact_paths is not None else None)
+
+        for chunk in chunks:
+            if chunk.get("level") == "team":
+                chunk_team = (chunk.get("team_name") or
+                              chunk.get("metadata", {}).get("team_name", "")).lower()
+                if team_lower in chunk_team and chunk["chunk_id"].endswith("-chunk-0"):
+                    additions.append({
+                        "chunk_id": chunk["chunk_id"],
+                        "text": chunk["text"],
+                        "metadata": {
+                            "document_id": chunk.get("document_id") or chunk.get("metadata", {}).get("document_id"),
+                            "level": "team",
+                            "team_name": chunk.get("team_name") or chunk.get("metadata", {}).get("team_name"),
+                        },
+                        "score": 0.01,
+                        "rrf_score": 0.01,
+                        "source": "team_style_boost",
+                    })
+                    break
+
+    if not additions:
         return results
 
-    # Find team doc in chunks and prepend
-    chunks = _load_chunks(artifact_paths.chunks if artifact_paths is not None else None)
-    for chunk in chunks:
-        if chunk.get("level") == "team":
-            chunk_team = (chunk.get("team_name") or
-                          chunk.get("metadata", {}).get("team_name", "")).lower()
-            if team_lower in chunk_team and chunk["chunk_id"].endswith("-chunk-0"):
-                addition = {
-                    "chunk_id": chunk["chunk_id"],
-                    "text": chunk["text"],
-                    "metadata": {
-                        "document_id": chunk.get("document_id") or chunk.get("metadata", {}).get("document_id"),
-                        "level": "team",
-                        "team_name": chunk.get("team_name") or chunk.get("metadata", {}).get("team_name"),
-                    },
-                    "score": 0.01,
-                    "rrf_score": 0.01,
-                    "source": "team_style_boost",
-                }
-                # Deduplicate: prepend and remove any existing copy
-                seen_ids = set()
-                deduped = [addition]
-                seen_ids.add(addition["chunk_id"])
-                for r in results:
-                    if r["chunk_id"] not in seen_ids:
-                        deduped.append(r)
-                        seen_ids.add(r["chunk_id"])
-                results = deduped
-                break
-
-    return results
+    # Prepend additions and deduplicate (mirrors _ensure_comparison_entities).
+    seen_ids = set()
+    deduped = []
+    for r in additions + results:
+        if r["chunk_id"] not in seen_ids:
+            deduped.append(r)
+            seen_ids.add(r["chunk_id"])
+    return deduped
 
 
 # ---------------------------------------------------------------------------
