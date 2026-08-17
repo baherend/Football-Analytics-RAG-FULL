@@ -6,7 +6,16 @@ import re
 from typing import Any
 
 
-_TOKEN_PATTERN = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+# Latin letters/digits (unchanged) plus Arabic letters+diacritics
+# (U+0621-U+065F -- HAMZA through the combining diacritic marks; excludes
+# Arabic punctuation, which sits below U+0621: ، U+060C, ؛ U+061B, ؟
+# U+061F) and Arabic-Indic digits (U+0660-U+0669), so Arabic punctuation
+# acts as a separator exactly like English punctuation already does,
+# instead of gluing onto the adjacent word token. No transliteration, no
+# stemming/morphology beyond the existing English-only suffix rules in
+# _normalize_token (which only ever match ASCII suffixes and are
+# therefore inert -- a no-op -- on Arabic-range tokens).
+_TOKEN_PATTERN = re.compile(r"[a-z0-9]+|[ء-ٟ٠-٩]+", re.IGNORECASE)
 
 _STOP_WORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "did", "do",
