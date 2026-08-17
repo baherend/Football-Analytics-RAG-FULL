@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from src.embedding_config import MINILM
 
 # ---------------------------------------------------------------------------
 # Embedding Model Cache
@@ -22,9 +23,12 @@ from typing import Any
 _model_cache: dict[str, Any] = {}
 
 
-def get_embedding_model(model_name: str = "all-MiniLM-L6-v2"):
+def get_embedding_model(model_name: str = MINILM.hf_name):
     """
-    Get or load the embedding model. Cached in memory after first load.
+    Get or load the embedding model. Cached in memory after first load,
+    keyed by the exact `model_name` (Hugging Face identifier) passed in --
+    different models never collide in this cache, and requesting the same
+    `model_name` twice returns the same cached instance.
 
     This avoids reloading the model on every query (~1-2 seconds per load).
     """

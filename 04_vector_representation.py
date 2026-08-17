@@ -34,11 +34,13 @@ from pathlib import Path
 import numpy as np
 from rank_bm25 import BM25Okapi
 
+from src.embedding_config import resolve_embedding_config
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-MODEL_NAME = "all-MiniLM-L6-v2"
+MODEL_NAME = resolve_embedding_config().hf_name  # legacy default (MiniLM) -- see src.embedding_config
 ALPHA = 0.6  # weight for dense scores (1-ALPHA for BM25)
 
 

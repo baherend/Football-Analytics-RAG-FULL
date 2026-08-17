@@ -27,6 +27,7 @@ from pathlib import Path
 import chromadb
 
 from src.artifacts import resolve_output_dir, resolve_chroma_collection_name
+from src.embedding_config import resolve_embedding_config
 from src.extraction.match_facts import COMPETITION_ID, SEASON_ID
 
 # ---------------------------------------------------------------------------
@@ -35,7 +36,7 @@ from src.extraction.match_facts import COMPETITION_ID, SEASON_ID
 
 DB_PATH = Path("output/chroma_db")
 COLLECTION_NAME = "wc2022_documents"
-MODEL_NAME = "all-MiniLM-L6-v2"
+MODEL_NAME = resolve_embedding_config().hf_name  # legacy default (MiniLM) -- see src.embedding_config
 
 
 # ---------------------------------------------------------------------------
@@ -44,8 +45,20 @@ MODEL_NAME = "all-MiniLM-L6-v2"
 
 def create_vector_store(chunks: list[dict] | None = None,
                         persist_dir: Path = DB_PATH,
-                        collection_name: str = COLLECTION_NAME) -> chromadb.Collection:
-    """Create or load ChromaDB collection from chunks."""
+                        collection_name: str = COLLECTION_NAME,
+                        embedding_model_id: str | None = None) -> chromadb.Collection:
+    """
+    Create or load ChromaDB collection from chunks.
+
+    `embedding_model_id` selects which registered model (see
+    src.embedding_config) embeds the documents; None resolves to the
+    project default (MiniLM), unchanged from prior behavior. Building a
+    collection with one model never touches another model's collection,
+    since callers are expected to pass a `collection_name` that already
+    encodes the model identity (see ArtifactPaths.chroma_collection_name)
+    -- this function itself only deletes/creates the exact `collection_name`
+    given to it.
+    """
     from sentence_transformers import SentenceTransformer
 
     if chunks is None:
@@ -56,8 +69,9 @@ def create_vector_store(chunks: list[dict] | None = None,
         else:
             chunks = import_module("03_chunking").chunks
 
-    print(f"Loading embedding model: {MODEL_NAME}")
-    model = SentenceTransformer(MODEL_NAME)
+    embedding_config = resolve_embedding_config(embedding_model_id)
+    print(f"Loading embedding model: {embedding_config.hf_name}")
+    model = SentenceTransformer(embedding_config.hf_name)
 
     persist_dir.mkdir(parents=True, exist_ok=True)
     client = chromadb.PersistentClient(path=str(persist_dir))
@@ -115,20 +129,30 @@ def get_collection(persist_dir: Path = DB_PATH,
 
 
 def main() -> int:
+    from src.embedding_config import DEFAULT_EMBEDDING_MODEL_ID, EMBEDDING_MODELS
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--competition-id", type=int, default=COMPETITION_ID)
     parser.add_argument("--season-id", type=int, default=SEASON_ID)
     parser.add_argument("--namespaced", action="store_true",
                         help="Use output/competitions/<id>/<id>/ even for the WC2022 default")
+    parser.add_argument("--embedding-model", default=None, choices=sorted(EMBEDDING_MODELS),
+                        help=f"Registered embedding model id to build the index with "
+                             f"(default: {DEFAULT_EMBEDDING_MODEL_ID}). A non-default model "
+                             f"for the WC2022 default forces the namespaced output directory, "
+                             f"same as --namespaced, so it can never write into the production "
+                             f"MiniLM Chroma directory.")
     args = parser.parse_args()
 
     output_dir = resolve_output_dir(args.competition_id, args.season_id,
-                                    legacy_default=not args.namespaced)
+                                    legacy_default=not args.namespaced,
+                                    embedding_model_id=args.embedding_model)
     collection_name = resolve_chroma_collection_name(
         args.competition_id,
         args.season_id,
         legacy_name=COLLECTION_NAME,
         legacy_default=not args.namespaced,
+        embedding_model_id=args.embedding_model,
     )
     chunks_path = output_dir / "chunks.json"
 
@@ -148,6 +172,7 @@ def main() -> int:
         chunks=chunks,
         persist_dir=output_dir / "chroma_db",
         collection_name=collection_name,
+        embedding_model_id=args.embedding_model,
     )
     print("Done.")
     return 0

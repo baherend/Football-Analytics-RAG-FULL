@@ -25,6 +25,7 @@ import re
 from pathlib import Path
 
 from src.artifacts import ArtifactPaths
+from src.embedding_config import resolve_embedding_config
 from src.retrieval.chunk_selector import select_relevant_chunks
 
 
@@ -36,7 +37,7 @@ INDICES_DIR = Path("output/indices")
 CHUNKS_PATH = Path("output/chunks.json")
 CHROMA_DIR = Path("output/chroma_db")
 COLLECTION_NAME = "wc2022_documents"
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+EMBEDDING_MODEL = resolve_embedding_config().hf_name  # legacy default (MiniLM) -- see src.embedding_config
 
 # RRF constant (standard from the original RRF paper)
 RRF_K = 60
@@ -168,9 +169,14 @@ def dense_search(query: str, k: int = 20,
     Dense retrieval using ChromaDB embeddings.
 
     `persist_dir`/`collection_name` default to the legacy module-level constants.
-    When `artifact_paths` is given, it selects both the namespaced Chroma
-    directory and that dataset's deterministic collection name, preventing
-    cross-competition collection reuse.
+    When `artifact_paths` is given, it selects the namespaced Chroma
+    directory, that dataset's deterministic collection name, AND the
+    embedding model tied to that identity (artifact_paths.embedding_model_id)
+    -- the exact model the index was built with -- preventing both
+    cross-competition collection reuse and a query embedded with the wrong
+    model. If that model's collection was never built, Chroma's
+    get_collection() raises a clear error rather than silently returning
+    results from an unrelated (or nonexistent) index.
 
     Returns list of {chunk_id, text, metadata, score, rank}.
     Retrieves more candidates (k=20) for fusion.
@@ -181,9 +187,12 @@ def dense_search(query: str, k: int = 20,
     if artifact_paths is not None:
         persist_dir = artifact_paths.chroma_dir
         collection_name = artifact_paths.chroma_collection_name
+        embedding_model_name = resolve_embedding_config(artifact_paths.embedding_model_id).hf_name
+    else:
+        embedding_model_name = EMBEDDING_MODEL
 
-    # Use cached model (loaded once)
-    model = get_embedding_model(EMBEDDING_MODEL)
+    # Use cached model (loaded once per resolved model name)
+    model = get_embedding_model(embedding_model_name)
     client = PersistentClient(path=str(persist_dir))
     collection = client.get_collection(collection_name)
 

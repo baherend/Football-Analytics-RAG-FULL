@@ -203,6 +203,56 @@ def test_structured_cache_key_includes_full_stage_taxonomy_semantics(monkeypatch
     assert seen_keys[0] != seen_keys[1]
 
 
+def test_embedding_model_cache_distinguishes_different_model_names(monkeypatch):
+    """Cache behavior: MiniLM and MPNet model instances must be
+    distinguished correctly -- requesting two different model names must
+    never return the same cached instance, and requesting the same name
+    twice must return the exact same instance (the existing cache-hit
+    contract, unaffected by adding a second model)."""
+    from src.embedding_config import MINILM, MPNET_MULTILINGUAL
+
+    class _FakeModel:
+        def __init__(self, name):
+            self.name = name
+
+    monkeypatch.setattr(
+        "sentence_transformers.SentenceTransformer",
+        lambda name: _FakeModel(name),
+    )
+    cache.clear_all_caches()
+
+    minilm_instance = cache.get_embedding_model(MINILM.hf_name)
+    mpnet_instance = cache.get_embedding_model(MPNET_MULTILINGUAL.hf_name)
+    minilm_instance_again = cache.get_embedding_model(MINILM.hf_name)
+
+    assert minilm_instance is not mpnet_instance
+    assert minilm_instance.name == MINILM.hf_name
+    assert mpnet_instance.name == MPNET_MULTILINGUAL.hf_name
+    # Cache hit: re-requesting the same model name returns the same instance.
+    assert minilm_instance_again is minilm_instance
+
+
+def test_embedding_model_cache_default_resolves_minilm(monkeypatch):
+    """Backward compatibility: get_embedding_model()'s zero-argument
+    default must still resolve MiniLM after the hardcoded literal was
+    replaced with a reference to the central registry."""
+    from src.embedding_config import MINILM
+
+    class _FakeModel:
+        def __init__(self, name):
+            self.name = name
+
+    monkeypatch.setattr(
+        "sentence_transformers.SentenceTransformer",
+        lambda name: _FakeModel(name),
+    )
+    cache.clear_all_caches()
+
+    instance = cache.get_embedding_model()
+
+    assert instance.name == MINILM.hf_name == "sentence-transformers/all-MiniLM-L6-v2"
+
+
 def test_resolve_from_text_preserves_file_backed_structured_cache(monkeypatch):
     import src.query.resolver as resolver
 

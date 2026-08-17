@@ -100,12 +100,16 @@ def configure_runtime_dataset(
     competition_id: int = 43,
     season_id: int = 106,
     legacy_default: bool = True,
+    embedding_model_id: str | None = None,
 ) -> None:
-    """Select one dataset for all queries in this chat runtime."""
+    """Select one dataset (and embedding model) for all queries in this chat
+    runtime. `embedding_model_id=None` keeps the existing MiniLM-compatible
+    default -- see src.embedding_config."""
     state.artifact_paths = resolve_runtime_artifact_paths(
         competition_id,
         season_id,
         legacy_default=legacy_default,
+        embedding_model_id=embedding_model_id,
     )
 
 
@@ -430,6 +434,12 @@ def main() -> int:
         action="store_true",
         help="List discovered runtime datasets (from output/) and exit",
     )
+    from src.embedding_config import DEFAULT_EMBEDDING_MODEL_ID, EMBEDDING_MODELS
+    parser.add_argument(
+        "--embedding-model", default=None, choices=sorted(EMBEDDING_MODELS),
+        help=f"Registered embedding model id to query with (default: {DEFAULT_EMBEDDING_MODEL_ID}). "
+             f"Must match the model the selected dataset's Chroma index was built with.",
+    )
     parser.add_argument("question", nargs="*")
     args = parser.parse_args()
 
@@ -441,12 +451,14 @@ def main() -> int:
         parser.error("--competition-id and --season-id must be provided together")
 
     if args.competition_id is None:
-        configure_runtime_dataset(legacy_default=not args.namespaced)
+        configure_runtime_dataset(legacy_default=not args.namespaced,
+                                   embedding_model_id=args.embedding_model)
     else:
         configure_runtime_dataset(
             args.competition_id,
             args.season_id,
             legacy_default=not args.namespaced,
+            embedding_model_id=args.embedding_model,
         )
 
     # Check for API key

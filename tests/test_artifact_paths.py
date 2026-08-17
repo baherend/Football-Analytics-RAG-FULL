@@ -1128,7 +1128,8 @@ def test_chroma_store_cli_non_wc_uses_dataset_collection_name(monkeypatch, tmp_p
 
     captured = {}
 
-    def fake_create_vector_store(*, chunks, persist_dir, collection_name=chroma_mod.COLLECTION_NAME):
+    def fake_create_vector_store(*, chunks, persist_dir, collection_name=chroma_mod.COLLECTION_NAME,
+                                  embedding_model_id=None):
         captured["persist_dir"] = persist_dir
         captured["collection_name"] = collection_name
         return object()
@@ -1158,7 +1159,8 @@ def test_chroma_store_cli_namespaced_wc2022_uses_dataset_collection_name(monkeyp
 
     captured = {}
 
-    def fake_create_vector_store(*, chunks, persist_dir, collection_name=chroma_mod.COLLECTION_NAME):
+    def fake_create_vector_store(*, chunks, persist_dir, collection_name=chroma_mod.COLLECTION_NAME,
+                                  embedding_model_id=None):
         captured["collection_name"] = collection_name
         return object()
 
@@ -1556,3 +1558,228 @@ def test_chunking_import_does_not_probe_legacy_documents_when_absent(monkeypatch
 
     assert chunking.chunks == []
     assert "[01_documents] WARNING:" not in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Multilingual Embedding Integration: dense-index identity is
+# embedding-model-aware, on top of the existing competition/season
+# namespace -- see src.embedding_config.
+# ---------------------------------------------------------------------------
+
+
+def test_artifact_paths_default_embedding_model_id_is_minilm():
+    """Backward compatibility: constructing ArtifactPaths without specifying
+    embedding_model_id (every existing call site) must keep resolving to
+    MiniLM, unchanged."""
+    from src.embedding_config import DEFAULT_EMBEDDING_MODEL_ID
+
+    paths = ArtifactPaths(competition_id=2, season_id=27)
+    assert paths.embedding_model_id == DEFAULT_EMBEDDING_MODEL_ID == "minilm"
+
+
+def test_default_embedding_model_collection_name_is_unchanged():
+    """The default (MiniLM) collection name must be byte-identical to the
+    pre-embedding-config name -- no silent change to the existing
+    production collection identity."""
+    paths = ArtifactPaths(competition_id=2, season_id=27)
+    assert paths.chroma_collection_name == "competition_2_season_27_documents"
+
+
+def test_non_default_embedding_model_gets_a_distinct_collection_name():
+    minilm_paths = ArtifactPaths(competition_id=2, season_id=27)
+    mpnet_paths = ArtifactPaths(competition_id=2, season_id=27, embedding_model_id="mpnet-multilingual")
+
+    assert minilm_paths.chroma_collection_name != mpnet_paths.chroma_collection_name
+    assert mpnet_paths.chroma_collection_name == "competition_2_season_27_mpnet-multilingual_documents"
+    # Same physical Chroma directory -- Chroma isolates collections by name
+    # within one PersistentClient path; only the collection identity differs.
+    assert minilm_paths.chroma_dir == mpnet_paths.chroma_dir
+
+
+def test_wc2022_default_embedding_model_keeps_legacy_collection_name():
+    """ArtifactPaths(43, 106) with no embedding_model_id override must keep
+    resolving the exact pre-existing namespaced collection name (this is
+    ArtifactPaths' own always-namespaced behavior, distinct from the
+    resolve_*() legacy-flat-layout boundary tested elsewhere)."""
+    paths = ArtifactPaths(competition_id=43, season_id=106)
+    assert paths.chroma_collection_name == "competition_43_season_106_documents"
+
+
+def test_wc2022_mpnet_selection_gets_isolated_collection_name():
+    paths = ArtifactPaths(competition_id=43, season_id=106, embedding_model_id="mpnet-multilingual")
+    assert paths.chroma_collection_name == "competition_43_season_106_mpnet-multilingual_documents"
+    assert paths.chroma_collection_name != "wc2022_documents"
+    assert paths.chroma_collection_name != ArtifactPaths(43, 106).chroma_collection_name
+
+
+def test_resolve_runtime_artifact_paths_default_embedding_model_keeps_legacy_none():
+    """Backward compatibility: the exact existing contract -- calling with
+    no embedding_model_id must still return None for the WC2022 default,
+    matching every current zero-argument production caller (chat.py)."""
+    from src.artifacts import resolve_runtime_artifact_paths
+
+    assert resolve_runtime_artifact_paths(43, 106) is None
+    assert resolve_runtime_artifact_paths(43, 106, embedding_model_id="minilm") is None
+
+
+def test_resolve_runtime_artifact_paths_non_default_model_forces_namespacing():
+    """Selecting a non-default embedding model for the WC2022 default must
+    NOT silently collapse to the shared legacy flat directory -- it must
+    resolve to an explicit, isolated ArtifactPaths, exactly like
+    --namespaced already does for competition/season."""
+    from src.artifacts import resolve_runtime_artifact_paths
+
+    result = resolve_runtime_artifact_paths(43, 106, embedding_model_id="mpnet-multilingual")
+
+    assert result == ArtifactPaths(43, 106, embedding_model_id="mpnet-multilingual")
+    assert result is not None
+    assert result.chroma_collection_name != "wc2022_documents"
+
+
+def test_resolve_output_dir_non_default_model_forces_namespaced_directory():
+    """A non-default embedding model for WC2022 must resolve to the
+    namespaced directory (output/competitions/43/106/), never the flat
+    legacy output/ directory that holds the production MiniLM Chroma
+    store -- so building an MPNet index for WC2022 can never write into
+    the same directory as production."""
+    from src.artifacts import resolve_output_dir
+
+    legacy_dir = resolve_output_dir(43, 106, output_root=Path("output"))
+    mpnet_dir = resolve_output_dir(43, 106, output_root=Path("output"), embedding_model_id="mpnet-multilingual")
+
+    assert legacy_dir == Path("output")
+    assert mpnet_dir == ArtifactPaths(43, 106, embedding_model_id="mpnet-multilingual").root
+    assert mpnet_dir != legacy_dir
+    assert not str(mpnet_dir).startswith(str(legacy_dir / "chroma_db"))
+
+
+def test_resolve_chroma_collection_name_non_default_model_is_isolated():
+    from src.artifacts import resolve_chroma_collection_name
+
+    legacy_name = resolve_chroma_collection_name(43, 106, legacy_name="wc2022_documents")
+    mpnet_name = resolve_chroma_collection_name(43, 106, legacy_name="wc2022_documents",
+                                                 embedding_model_id="mpnet-multilingual")
+
+    assert legacy_name == "wc2022_documents"
+    assert mpnet_name != legacy_name
+    assert mpnet_name == "competition_43_season_106_mpnet-multilingual_documents"
+
+
+def test_dense_search_resolves_embedding_model_from_artifact_paths(monkeypatch, tmp_path):
+    """Proof that dense_search() selects the embedding model tied to
+    artifact_paths.embedding_model_id, not always the legacy MiniLM
+    constant -- the query model always matches the model the caller says
+    the index was built with."""
+    from importlib import import_module
+
+    router = import_module("src.retrieval.search")
+    paths = ArtifactPaths(competition_id=2, season_id=27, output_root=tmp_path,
+                           embedding_model_id="mpnet-multilingual")
+
+    seen = {}
+
+    class FakeCollection:
+        def query(self, **kwargs):
+            return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+
+    class FakeClient:
+        def __init__(self, path):
+            pass
+
+        def get_collection(self, name):
+            seen["collection_name"] = name
+            return FakeCollection()
+
+    def fake_get_embedding_model(model_name):
+        seen["embedding_model_name"] = model_name
+        return type("FakeModel", (), {
+            "encode": lambda self, values, normalize_embeddings=True: type(
+                "Encoded", (), {"tolist": lambda self: [[0.0]]},
+            )(),
+        })()
+
+    monkeypatch.setattr("chromadb.PersistentClient", FakeClient)
+    monkeypatch.setattr("src.cache.get_embedding_model", fake_get_embedding_model)
+
+    router.dense_search("test", artifact_paths=paths)
+
+    assert seen["embedding_model_name"] == "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+    assert seen["collection_name"] == "competition_2_season_27_mpnet-multilingual_documents"
+
+
+def test_dense_search_default_still_resolves_minilm(monkeypatch):
+    """Backward compatibility: artifact_paths=None (every existing
+    zero-argument production caller) must still resolve MiniLM."""
+    from importlib import import_module
+
+    router = import_module("src.retrieval.search")
+    seen = {}
+
+    class FakeCollection:
+        def query(self, **kwargs):
+            return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+
+    class FakeClient:
+        def __init__(self, path):
+            pass
+
+        def get_collection(self, name):
+            return FakeCollection()
+
+    def fake_get_embedding_model(model_name):
+        seen["embedding_model_name"] = model_name
+        return type("FakeModel", (), {
+            "encode": lambda self, values, normalize_embeddings=True: type(
+                "Encoded", (), {"tolist": lambda self: [[0.0]]},
+            )(),
+        })()
+
+    monkeypatch.setattr("chromadb.PersistentClient", FakeClient)
+    monkeypatch.setattr("src.cache.get_embedding_model", fake_get_embedding_model)
+
+    router.dense_search("test")
+
+    assert seen["embedding_model_name"] == "sentence-transformers/all-MiniLM-L6-v2"
+
+
+def test_dense_search_model_index_mismatch_fails_clearly_not_silently(monkeypatch, tmp_path):
+    """Retrieval safety: querying artifact_paths for a model whose
+    collection was never built must raise a clear error, never silently
+    return empty/wrong results from an unrelated collection."""
+    import chromadb
+    from importlib import import_module
+
+    router = import_module("src.retrieval.search")
+    chroma_mod = import_module("05_create_chroma_store")
+
+    class _FakeEmbeddingModel:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def encode(self, texts, **kwargs):
+            import numpy as np
+            return np.zeros((len(texts), 8), dtype="float32")
+
+    monkeypatch.setattr("sentence_transformers.SentenceTransformer", _FakeEmbeddingModel)
+    from src.cache import clear_all_caches
+    clear_all_caches()
+
+    minilm_paths = ArtifactPaths(competition_id=9, season_id=1, output_root=tmp_path)
+    mpnet_paths = ArtifactPaths(competition_id=9, season_id=1, output_root=tmp_path,
+                                 embedding_model_id="mpnet-multilingual")
+
+    # Only the MiniLM (default) collection is actually built.
+    chroma_mod.create_vector_store(
+        chunks=[{"chunk_id": "c1", "document_id": "c1-doc", "level": "1",
+                 "text": "content", "search_text": "content"}],
+        persist_dir=minilm_paths.chroma_dir,
+        collection_name=minilm_paths.chroma_collection_name,
+    )
+
+    # Querying with the SAME directory but the MPNet identity must fail
+    # clearly (the mpnet-suffixed collection was never created) -- not
+    # silently return MiniLM's results under a different model's identity.
+    with pytest.raises(Exception) as exc_info:
+        router.dense_search("test query", artifact_paths=mpnet_paths)
+
+    assert "does not exist" in str(exc_info.value) or isinstance(exc_info.value, chromadb.errors.NotFoundError)
