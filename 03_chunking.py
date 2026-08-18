@@ -27,97 +27,32 @@ import re
 from importlib import import_module
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
-MAX_CHUNK_SIZE = 500   # characters
-CHUNK_OVERLAP = 50     # characters
-SENTENCE_END = re.compile(r'(?<=[.!?])\s+')
-
-
-# ---------------------------------------------------------------------------
-# Chunking
-# ---------------------------------------------------------------------------
-
-
-def split_sentences(text: str) -> list[str]:
-    """Split text into sentences."""
-    return [s.strip() for s in SENTENCE_END.split(text) if s.strip()]
-
-
-def _make_chunk(doc: dict, chunk_idx: int, chunk_text: str) -> dict:
-    """
-    Build a single chunk dict for a document.
-
-    This is the one place that defines what a "chunk" looks like — every
-    call site below (short doc, no-sentences fallback, mid-loop, final
-    leftover) goes through here instead of repeating the same dict literal.
-    """
-    doc_id = doc["document_id"]
-    return {
-        "chunk_id": f"{doc_id}-chunk-{chunk_idx}",
-        "document_id": doc_id,
-        "level": doc.get("level", "unknown"),
-        "match_id": doc.get("match_id"),
-        "player_name": doc.get("player_name"),
-        "team_name": doc.get("team_name"),
-        "text": chunk_text,
-        "search_text": chunk_text,
-        "metadata": doc.get("metadata", {}),
-    }
-
-
-def chunk_document(doc: dict, max_size: int = MAX_CHUNK_SIZE,
-                   overlap: int = CHUNK_OVERLAP) -> list[dict]:
-    """Split a document into chunks."""
-    text = doc.get("cleaned_text") or doc.get("text", "")
-
-    # Short document, or no sentence boundaries found — single chunk.
-    sentences = split_sentences(text) if len(text) > max_size else []
-    if len(text) <= max_size or not sentences:
-        return [_make_chunk(doc, 0, text)]
-
-    chunks = []
-    current_chunk = []
-    current_length = 0
-    chunk_idx = 0
-
-    for sentence in sentences:
-        sentence_len = len(sentence)
-
-        if current_length + sentence_len > max_size and current_chunk:
-            chunk_text = " ".join(current_chunk)
-            chunks.append(_make_chunk(doc, chunk_idx, chunk_text))
-            chunk_idx += 1
-
-            if overlap > 0:
-                overlap_text = current_chunk[-1]
-                current_chunk = [overlap_text]
-                current_length = len(overlap_text)
-            else:
-                current_chunk = []
-                current_length = 0
-
-        current_chunk.append(sentence)
-        current_length += sentence_len
-
-    if current_chunk:
-        chunk_text = " ".join(current_chunk)
-        chunks.append(_make_chunk(doc, chunk_idx, chunk_text))
-
-    return chunks
+# Migration Step 6: the chunking logic moved to src/knowledge/chunking.py.
+# This script keeps its CLI (argument parsing, competition/season path
+# resolution, artifact I/O) and re-exports the moved symbols so existing
+# importers and tests are unaffected.
+from src.knowledge.chunking import (  # noqa: F401  (compatibility re-exports)
+    CHUNK_OVERLAP,
+    MAX_CHUNK_SIZE,
+    SENTENCE_END,
+    chunk_document,
+    split_sentences,
+)
+from src.knowledge.chunking import build_chunks as _build_chunks
 
 
 def build_chunks(documents: list[dict] | None = None) -> list[dict]:
-    """Build chunks from all documents."""
+    """Build chunks from all documents.
+
+    Thin wrapper over src.knowledge.chunking.build_chunks(). The `None`
+    default is preserved here (and NOT in the knowledge module) because it
+    reaches back into 01_documents.py, whose import-time filesystem read uses
+    the hardcoded legacy output/ path -- legacy behavior this script's
+    existing callers still rely on. See PROJECT_MEMORY.md's deferred debt.
+    """
     if documents is None:
         documents = import_module("01_documents").documents
-
-    all_chunks = []
-    for doc in documents:
-        all_chunks.extend(chunk_document(doc))
-    return all_chunks
+    return _build_chunks(documents)
 
 
 # Module-level chunks for legacy library-import behavior.
