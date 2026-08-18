@@ -1,12 +1,12 @@
 """
 multilingual_retrieval_cases.py -- Multilingual Retrieval Baseline: English /
 Modern Standard Arabic (MSA) / Egyptian Arabic (EGY) query variants for the
-existing WC2022 Semantic Ground Truth (tests/semantic_ground_truth.py).
+existing WC2022 Semantic Ground Truth (src/evaluation/ground_truth/semantic.py).
 
 This module defines NO new relevance truth. Every variant below references
 an existing semantic ground-truth case by `source_case_id`; the required/
 optional relevant document IDs, levels, and all other relevance judgments
-are resolved from `tests.semantic_ground_truth.SEMANTIC_GROUND_TRUTH` at
+are resolved from `src.evaluation.ground_truth.semantic.SEMANTIC_GROUND_TRUTH` at
 evaluation time (see `build_translated_cases()`), never duplicated or
 re-authored here. Only the query TEXT changes between language variants --
 the ground truth being measured against stays identical.
@@ -205,7 +205,7 @@ def build_translated_cases(
     """
     Build a translated case list for `language` by taking each English
     semantic ground-truth case verbatim (from
-    tests.semantic_ground_truth.SEMANTIC_GROUND_TRUTH) and replacing only
+    src.evaluation.ground_truth.semantic.SEMANTIC_GROUND_TRUTH) and replacing only
     its `query` field with the matching variant's translated text.
 
     Relevance truth (relevant_document_ids, optional_relevant_document_ids,
@@ -217,7 +217,7 @@ def build_translated_cases(
     Cases with no variant for `language` are skipped (not silently given
     a fabricated query).
     """
-    from tests.semantic_ground_truth import SEMANTIC_GROUND_TRUTH
+    from src.evaluation.ground_truth.semantic import SEMANTIC_GROUND_TRUTH
 
     query_by_case_id = {
         v.source_case_id: v.query for v in variants if v.language == language
@@ -240,7 +240,7 @@ def _validate_translated_cases(metadata: dict, cases: list, chunks_path) -> list
     GroundTruthBundle.validate_fn.
 
     Deliberately NOT the same checks as
-    tests.semantic_ground_truth.validate_semantic_ground_truth: that
+    src.evaluation.ground_truth.semantic.validate_semantic_ground_truth: that
     validator pins an immutable content hash over the English cases
     (compute_canonical_case_hash), which exists to protect the English
     ground truth's wording from silent drift. A translated variant's query
@@ -274,14 +274,14 @@ def _validate_translated_cases(metadata: dict, cases: list, chunks_path) -> list
 
 def build_ground_truth_bundle(language: str):
     """
-    Build a GroundTruthBundle (see tests.retrieval_evaluator) for `language`,
+    Build a GroundTruthBundle (see src.evaluation.retrieval_evaluator) for `language`,
     reusing the WC2022 Semantic Ground Truth's own metadata (same
     dataset_id, same chunks_sha256 -- this is the SAME chunks.json, only the
     query text differs) so run_retrieval_baseline()'s existing chunks-hash
     integrity check still applies unchanged.
     """
-    from tests.retrieval_evaluator import GroundTruthBundle
-    from tests.semantic_ground_truth import SEMANTIC_GROUND_TRUTH_METADATA
+    from src.evaluation.retrieval_evaluator import GroundTruthBundle
+    from src.evaluation.ground_truth.semantic import SEMANTIC_GROUND_TRUTH_METADATA
 
     cases = build_translated_cases(language)
     metadata = dict(SEMANTIC_GROUND_TRUTH_METADATA)

@@ -29,7 +29,7 @@ def bm25_search(query: str, k: int = 20, artifact_paths: ArtifactPaths | None = 
     """
     # Deliberately a lazy (call-time, not import-time) import: the
     # underlying index/chunk loaders and their caches must stay defined in
-    # search.py -- tests/retrieval_evaluator.py::reset_retrieval_caches()
+    # search.py -- src/evaluation/retrieval_evaluator.py::reset_retrieval_caches()
     # resets those caches by reassigning `_bm25_cache`/`_chunks_cache`
     # directly on the `src.retrieval.search` module object between
     # benchmark cases. Re-exporting them into this module by name would

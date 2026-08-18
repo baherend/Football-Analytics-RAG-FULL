@@ -1,11 +1,11 @@
 ﻿import pytest
 
-from tests.ground_truth_registry import (
+from src.evaluation.ground_truth.registry import (
     GroundTruthNotRegisteredError,
     resolve_ground_truth_bundle,
 )
-from tests.retrieval_evaluator import GroundTruthBundle
-from tests.semantic_ground_truth import (
+from src.evaluation.retrieval_evaluator import GroundTruthBundle
+from src.evaluation.ground_truth.semantic import (
     SEMANTIC_GROUND_TRUTH,
     SEMANTIC_GROUND_TRUTH_METADATA,
     validate_semantic_ground_truth,
@@ -30,7 +30,7 @@ def test_unregistered_dataset_does_not_fall_back_to_wc2022():
 
 def test_evaluator_uses_registry_for_selected_dataset():
     from src.artifacts import resolve_runtime_artifact_paths
-    from tests.retrieval_evaluator import run_retrieval_baseline
+    from src.evaluation.retrieval_evaluator import run_retrieval_baseline
 
     artifact_paths = resolve_runtime_artifact_paths(
         competition_id=2,

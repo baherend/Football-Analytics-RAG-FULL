@@ -32,7 +32,7 @@ import pytest
 
 # Allow running from project root or tests directory
 try:
-    from tests.evaluation_benchmark import BENCHMARK, get_by_category, get_categories
+    from src.evaluation.benchmark import BENCHMARK, get_by_category, get_categories
 except ImportError:
     from evaluation_benchmark import BENCHMARK, get_by_category, get_categories
 

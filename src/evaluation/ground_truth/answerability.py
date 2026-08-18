@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tests.semantic_ground_truth import SEMANTIC_GROUND_TRUTH_METADATA
+from src.evaluation.ground_truth.semantic import SEMANTIC_GROUND_TRUTH_METADATA
 
 
 ANSWERABILITY_GROUND_TRUTH_METADATA: dict = {

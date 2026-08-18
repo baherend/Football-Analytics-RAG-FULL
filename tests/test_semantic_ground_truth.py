@@ -23,7 +23,7 @@ import json
 
 import pytest
 
-from tests.semantic_ground_truth import (
+from src.evaluation.ground_truth.semantic import (
     SEMANTIC_GROUND_TRUTH,
     SEMANTIC_GROUND_TRUTH_METADATA,
     EXPECTED_CASE_IDS,

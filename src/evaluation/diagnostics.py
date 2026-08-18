@@ -10,10 +10,10 @@ using the same building blocks hybrid_search() itself uses; temporary,
 throwaway Chroma collections for candidate embedding models), to isolate
 which retrieval stage is responsible for Arabic degradation.
 
-Reused unmodified from tests.retrieval_evaluator: evaluate_case(),
+Reused unmodified from src.evaluation.retrieval_evaluator: evaluate_case(),
 GroundTruthBundle, all metric functions, temporary_chroma_copy() and its
 ArtifactPaths views, reset_retrieval_caches(). Reused unmodified from
-tests.multilingual_retrieval_cases: MultilingualQueryVariant,
+src.evaluation.ground_truth.multilingual: MultilingualQueryVariant,
 build_translated_cases(), MULTILINGUAL_QUERY_VARIANTS,
 ENTITY_SCRIPT_DIAGNOSTIC_VARIANTS.
 
@@ -32,7 +32,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from tests.retrieval_evaluator import (
+from src.evaluation.retrieval_evaluator import (
     DEFAULT_CANDIDATE_CHUNK_DEPTH,
     DEFAULT_K_VALUES,
     aggregate_by_group,
@@ -40,7 +40,7 @@ from tests.retrieval_evaluator import (
     evaluate_case,
     reset_retrieval_caches,
 )
-from tests.semantic_ground_truth import SEMANTIC_GROUND_TRUTH
+from src.evaluation.ground_truth.semantic import SEMANTIC_GROUND_TRUTH
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +94,7 @@ def evaluate_raw_rrf_method(
     artifact_paths: Any = None,
 ) -> List[Dict[str, Any]]:
     """
-    Same shape as tests.retrieval_evaluator.evaluate_retrieval_method(),
+    Same shape as src.evaluation.retrieval_evaluator.evaluate_retrieval_method(),
     for the raw_rrf_search diagnostic -- not one of the evaluator's
     SUPPORTED_METHODS, so this thin wrapper (not a evaluator modification)
     is the smallest way to reuse evaluate_case() for it.

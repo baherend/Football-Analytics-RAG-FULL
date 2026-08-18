@@ -5,7 +5,7 @@ evaluation_benchmark.py — Benchmark Dataset for RAG Evaluation
 Each query has expected outcomes for automated evaluation.
 
 Usage:
-    from tests.evaluation_benchmark import BENCHMARK, get_by_category
+    from src.evaluation.benchmark import BENCHMARK, get_by_category
     numeric_queries = get_by_category("numeric")
 """
 

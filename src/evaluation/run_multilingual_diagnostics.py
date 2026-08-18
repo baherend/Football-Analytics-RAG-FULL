@@ -4,8 +4,8 @@ multilingual retrieval root-cause investigation.
 
 Runs entirely against existing, unmodified production code
 (src/retrieval/search.py, src/query/resolver.py via
-tests/retrieval_evaluator.py) plus the diagnostic-only compositions in
-tests/multilingual_diagnostics.py. Never modifies production files, never
+src/evaluation/retrieval_evaluator.py) plus the diagnostic-only compositions in
+src/evaluation/diagnostics.py. Never modifies production files, never
 overwrites output/chroma_db, never touches output/competitions/.
 
 Usage:
@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.retrieval_evaluator import (
+from src.evaluation.retrieval_evaluator import (
     DEFAULT_CANDIDATE_CHUNK_DEPTH,
     DEFAULT_K_VALUES,
     aggregate_by_group,
@@ -42,13 +42,13 @@ from tests.retrieval_evaluator import (
     temporary_chroma_copy,
     validate_ground_truth_and_chunks,
 )
-from tests.multilingual_retrieval_cases import (
+from src.evaluation.ground_truth.multilingual import (
     LANGUAGES,
     ENTITY_SCRIPT_DIAGNOSTIC_VARIANTS,
     build_ground_truth_bundle,
     build_translated_cases,
 )
-from tests.multilingual_diagnostics import (
+from src.evaluation.diagnostics import (
     ENTITY_TRANSLITERATIONS,
     TempModelIndex,
     build_case_lookup,
@@ -129,7 +129,7 @@ def run_ablation_phase(out_dir: Path, k_values=DEFAULT_K_VALUES,
     results = {}
     try:
         with temporary_chroma_copy(chroma_dir, retrieval_module) as tmp_chroma:
-            from tests.retrieval_evaluator import LegacyTemporaryChromaArtifactPaths
+            from src.evaluation.retrieval_evaluator import LegacyTemporaryChromaArtifactPaths
             tmp_artifact_paths = LegacyTemporaryChromaArtifactPaths(
                 project_root=Path(PROJECT_ROOT), chroma_dir_override=Path(tmp_chroma),
             )
@@ -205,7 +205,7 @@ def run_entity_phase(out_dir: Path, k_values=DEFAULT_K_VALUES,
     results = []
     try:
         with temporary_chroma_copy(chroma_dir, retrieval_module) as tmp_chroma:
-            from tests.retrieval_evaluator import LegacyTemporaryChromaArtifactPaths
+            from src.evaluation.retrieval_evaluator import LegacyTemporaryChromaArtifactPaths
             tmp_artifact_paths = LegacyTemporaryChromaArtifactPaths(
                 project_root=Path(PROJECT_ROOT), chroma_dir_override=Path(tmp_chroma),
             )
@@ -264,7 +264,7 @@ def run_language_entity_phase(out_dir: Path, variant_cases: dict, k_values=DEFAU
     results = {}
     try:
         with temporary_chroma_copy(chroma_dir, retrieval_module) as tmp_chroma:
-            from tests.retrieval_evaluator import LegacyTemporaryChromaArtifactPaths
+            from src.evaluation.retrieval_evaluator import LegacyTemporaryChromaArtifactPaths
             tmp_artifact_paths = LegacyTemporaryChromaArtifactPaths(
                 project_root=Path(PROJECT_ROOT), chroma_dir_override=Path(tmp_chroma),
             )
@@ -353,10 +353,10 @@ def main() -> int:
     if args.phase in ("ablation", "all"):
         run_ablation_phase(out_dir)
     if args.phase in ("entity", "all"):
-        from tests.run_phase4_phase5 import PHASE4_PAIRS
+        from src.evaluation.run_phase4_phase5 import PHASE4_PAIRS
         run_entity_phase(out_dir, minimal_pairs=PHASE4_PAIRS)
     if args.phase in ("language-entity", "all"):
-        from tests.run_phase4_phase5 import PHASE5_VARIANTS
+        from src.evaluation.run_phase4_phase5 import PHASE5_VARIANTS
         run_language_entity_phase(out_dir, variant_cases=PHASE5_VARIANTS)
     if args.phase in ("models", "all"):
         run_model_phase(out_dir, args.models)

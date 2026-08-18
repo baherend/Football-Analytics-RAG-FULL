@@ -5,12 +5,12 @@ from __future__ import annotations
 import pytest
 
 from src.context.answerability import assess_answerability
-from tests.answerability_ground_truth import (
+from src.evaluation.ground_truth.answerability import (
     ANSWERABILITY_GROUND_TRUTH,
     ANSWERABILITY_GROUND_TRUTH_METADATA,
     EXPECTED_ANSWERABILITY_CASE_IDS,
 )
-from tests.semantic_ground_truth import (
+from src.evaluation.ground_truth.semantic import (
     SEMANTIC_GROUND_TRUTH,
     SEMANTIC_GROUND_TRUTH_METADATA,
     index_chunks_by_document_id,

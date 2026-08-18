@@ -26,7 +26,7 @@ def _get_chunks(artifact_paths: ArtifactPaths | None = None) -> list[dict]:
 
     Deliberately a lazy (call-time, not import-time) import: _load_chunks()
     and its cache dict (_chunks_cache) must stay defined in search.py --
-    tests/retrieval_evaluator.py::reset_retrieval_caches() resets that cache
+    src/evaluation/retrieval_evaluator.py::reset_retrieval_caches() resets that cache
     by reassigning the `_chunks_cache` attribute directly on the
     `src.retrieval.search` module object between benchmark cases. Re-exporting
     the cache dict into this module by name would silently desync it from

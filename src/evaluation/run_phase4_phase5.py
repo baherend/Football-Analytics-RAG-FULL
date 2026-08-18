@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.run_multilingual_diagnostics import run_entity_phase, run_language_entity_phase
+from src.evaluation.run_multilingual_diagnostics import run_entity_phase, run_language_entity_phase
 
 DEFAULT_OUT_DIR = Path(tempfile.gettempdir()) / "football_analytics_rag_diagnostics"
 

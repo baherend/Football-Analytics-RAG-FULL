@@ -1,7 +1,7 @@
 """
 test_multilingual_retrieval_cases.py -- Multilingual Retrieval Baseline:
 proves the EN/MSA/EGY query variants are correctly bound to the existing
-WC2022 Semantic Ground Truth cases (tests/semantic_ground_truth.py) before
+WC2022 Semantic Ground Truth cases (src/evaluation/ground_truth/semantic.py) before
 any evaluation is run against them.
 
 This is a variant-integrity test, not a retrieval-quality test. It does
@@ -10,14 +10,14 @@ not call any retrieval function.
 
 from __future__ import annotations
 
-from tests.multilingual_retrieval_cases import (
+from src.evaluation.ground_truth.multilingual import (
     LANGUAGES,
     MULTILINGUAL_QUERY_VARIANTS,
     MultilingualQueryVariant,
     build_ground_truth_bundle,
     build_translated_cases,
 )
-from tests.semantic_ground_truth import SEMANTIC_GROUND_TRUTH, EXPECTED_CASE_IDS
+from src.evaluation.ground_truth.semantic import SEMANTIC_GROUND_TRUTH, EXPECTED_CASE_IDS
 
 
 def test_multilingual_variants_reference_existing_semantic_cases():
@@ -115,7 +115,7 @@ def test_ground_truth_bundle_passes_existing_evaluator_validation():
     unmodified -- proving the evaluator-reuse seam actually works end to
     end (structure + chunks-hash integrity), without running retrieval.
     """
-    from tests.retrieval_evaluator import validate_ground_truth_and_chunks
+    from src.evaluation.retrieval_evaluator import validate_ground_truth_and_chunks
 
     for language in LANGUAGES:
         bundle = build_ground_truth_bundle(language)

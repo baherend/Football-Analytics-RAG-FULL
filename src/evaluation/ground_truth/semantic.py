@@ -11,7 +11,7 @@ This module contains:
 - Pure validation helper functions (no retrieval, no API calls)
 
 Usage:
-    from tests.semantic_ground_truth import (
+    from src.evaluation.ground_truth.semantic import (
         SEMANTIC_GROUND_TRUTH_METADATA,
         SEMANTIC_GROUND_TRUTH,
         validate_semantic_ground_truth,

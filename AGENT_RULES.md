@@ -48,7 +48,7 @@ scratch space. Before and after any work that could touch them: hash every
 *tracked* file in `output/chroma_db/` (not just `chroma.sqlite3` — the HNSW
 segment files matter too) against `git show HEAD:<path>`, and compare
 `output/competitions/` against a snapshot if one exists. Prefer
-`tests/retrieval_evaluator.py::temporary_chroma_copy()` over touching real
+`src/evaluation/retrieval_evaluator.py::temporary_chroma_copy()` over touching real
 Chroma directly. If a benign touch happens anyway (a known SQLite
 bookkeeping artifact from certain tests querying real Chroma), detect it,
 disclose it, identify the cause, and restore via `git checkout` — never

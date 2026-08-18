@@ -20,7 +20,7 @@ phase.
 Three things intentionally stay defined HERE rather than moving out:
 
 1. Index loading (_load_bm25_index/_load_chunks/_get_tokenizer and their
-   caches). tests/retrieval_evaluator.py::reset_retrieval_caches() resets
+   caches). src/evaluation/retrieval_evaluator.py::reset_retrieval_caches() resets
    these caches by reassigning `_bm25_cache`/`_chunks_cache` directly on
    this module object between benchmark cases, without a fresh module
    reimport. Moving the caches to another module and re-exporting them by

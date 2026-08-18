@@ -7,12 +7,12 @@ compose existing production functions, using small synthetic fixtures.
 
 from __future__ import annotations
 
-from tests.multilingual_diagnostics import (
+from src.evaluation.diagnostics import (
     ENTITY_TRANSLITERATIONS,
     build_case_lookup,
     make_translated_case,
 )
-from tests.semantic_ground_truth import SEMANTIC_GROUND_TRUTH
+from src.evaluation.ground_truth.semantic import SEMANTIC_GROUND_TRUTH
 
 
 def test_build_case_lookup_covers_all_semantic_cases():

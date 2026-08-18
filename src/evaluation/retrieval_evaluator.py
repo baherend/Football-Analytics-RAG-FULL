@@ -67,12 +67,12 @@ class GroundTruthBundle:
     evaluation. `validate_ground_truth_and_chunks` and
     `run_retrieval_baseline` default to `None`, which resolves to the
     existing, unmodified WC2022 Semantic Ground Truth
-    (tests.semantic_ground_truth) -- unchanged legacy behavior. Passing a
+    (src.evaluation.ground_truth.semantic) -- unchanged legacy behavior. Passing a
     bundle lets a caller supply a different competition's metadata/cases/
     validator instead, without coupling this module to one fixed source.
 
     `validate_fn` has the same shape as
-    `tests.semantic_ground_truth.validate_semantic_ground_truth`:
+    `src.evaluation.ground_truth.semantic.validate_semantic_ground_truth`:
     (metadata, cases, chunks_path) -> list[str] of error strings.
     """
 
@@ -82,7 +82,7 @@ class GroundTruthBundle:
 
 
 def _default_ground_truth_bundle() -> "GroundTruthBundle":
-    from tests.semantic_ground_truth import (
+    from src.evaluation.ground_truth.semantic import (
         SEMANTIC_GROUND_TRUTH,
         SEMANTIC_GROUND_TRUTH_METADATA,
         validate_semantic_ground_truth,
@@ -105,7 +105,7 @@ def _ensure_ground_truth_matches_artifact_paths(
 
     Only checks when the benchmark metadata declares *both*
     `competition_id` and `season_id` -- e.g. the WC2022 Semantic Ground
-    Truth metadata does (see tests/semantic_ground_truth.py). A benchmark
+    Truth metadata does (see src/evaluation/ground_truth/semantic.py). A benchmark
     that doesn't declare an identity isn't constrained here; the chunks
     SHA-256 check in `validate_ground_truth_and_chunks` still catches a
     snapshot mismatch regardless.
@@ -151,7 +151,7 @@ def validate_ground_truth_and_chunks(
     """Validate a Ground Truth benchmark against a chunks snapshot.
 
     `ground_truth` defaults to the existing WC2022 Semantic Ground Truth
-    (tests.semantic_ground_truth) when not supplied -- unchanged legacy
+    (src.evaluation.ground_truth.semantic) when not supplied -- unchanged legacy
     behavior. Passing a `GroundTruthBundle` validates/scores a different
     benchmark instead.
 
@@ -1298,7 +1298,7 @@ def run_retrieval_baseline(
     elif artifact_paths is None:
         resolved_ground_truth = _default_ground_truth_bundle()
     else:
-        from tests.ground_truth_registry import resolve_ground_truth_bundle
+        from src.evaluation.ground_truth.registry import resolve_ground_truth_bundle
 
         resolved_ground_truth = resolve_ground_truth_bundle(
             competition_id=artifact_paths.competition_id,

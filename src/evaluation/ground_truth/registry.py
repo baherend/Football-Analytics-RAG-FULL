@@ -1,5 +1,5 @@
-from tests.retrieval_evaluator import GroundTruthBundle, RetrievalEvaluationError
-from tests.semantic_ground_truth import (
+from src.evaluation.retrieval_evaluator import GroundTruthBundle, RetrievalEvaluationError
+from src.evaluation.ground_truth.semantic import (
     SEMANTIC_GROUND_TRUTH,
     SEMANTIC_GROUND_TRUTH_METADATA,
     validate_semantic_ground_truth,

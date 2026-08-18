@@ -1,8 +1,9 @@
 # Architecture Overview — Target Contract
 
-**Status**: migration in progress — steps 1-5 of §11 are done (retrieval
+**Status**: migration in progress — steps 1-7 of §11 are done (retrieval
 split, understanding/planning split, context engineering, generation/
-verification split), steps 6-8 remain.
+verification split, knowledge pipeline, evaluation organization); step 8
+(observability/cache reorganization, only if justified) remains.
 Code HAS moved; §4's "today:" annotations and §11 track where each stage
 actually lives. This document describes where the codebase is going and why;
 `PROJECT_MEMORY.md` describes where it actually is right now, including the
@@ -88,11 +89,21 @@ it's what lets `knowledge/` and `rag/` stay competition-agnostic.
 
 ### `src/knowledge/`
 
-Offline pipeline. `ingestion/` (today: `src/extraction/`) — raw source data
-→ typed domain facts. `rendering/` (today: `src/rendering/`) — domain facts
-→ natural-language documents. `chunking/` (today: `03_chunking.py`) —
-documents → retrievable chunks. `indexing/` (today: `04_vector_representation.py`
-+ `05_create_chroma_store.py`) — chunks → Dense/BM25/structured-fact stores.
+Offline pipeline. Partially realized as of §11 step 6:
+
+```
+preprocessing.py         -- today: src/knowledge/preprocessing.py   (moved from 02_preprocessing.py)
+chunking.py               -- today: src/knowledge/chunking.py        (moved from 03_chunking.py)
+indexing/bm25.py           -- today: src/knowledge/indexing/bm25.py         (moved from 04_vector_representation.py)
+indexing/embeddings.py      -- today: src/knowledge/indexing/embeddings.py   (moved from 04_vector_representation.py)
+indexing/vector_store.py     -- today: src/knowledge/indexing/vector_store.py (moved from 05_create_chroma_store.py)
+ingestion/                    -- today: src/extraction/  -- already cohesive; rename deferred (churn, no responsibility change)
+rendering/                     -- today: src/rendering/   -- already cohesive; rename deferred
+```
+
+The root numbered scripts remain as thin CLI orchestrators owning argument
+parsing, competition/season path resolution and artifact I/O, and re-export
+the moved symbols — `rebuild.py` and four test modules depend on that surface.
 Structured statistics are indexed as a first-class store here, not bolted on
 — `src/query/resolver.py`'s `FactStore` is the existing proof this already
 works, it just isn't organized under a shared `knowledge/` umbrella yet.
@@ -169,12 +180,26 @@ contain business logic itself.
 
 ### `src/evaluation/`
 
-Ground truth, benchmark runners, diagnostics — today spread across
-`tests/*ground_truth*.py`, `tests/retrieval_evaluator.py`,
-`tests/multilingual_diagnostics.py`. These are already evaluation-specific
-and already isolated from production `src/` — the target just gives them a
-proper home under `src/` (or a clearly-declared parallel root) so they're
-importable without reaching into `tests/`.
+Ground truth, benchmark runners, diagnostics. **Realized in §11 step 7** —
+moved out of `tests/`, where evaluation library code was indistinguishable
+from the test suite consuming it:
+
+```
+ground_truth/semantic.py       -- 24-case WC2022 semantic ground truth (protected data)
+ground_truth/answerability.py  -- answerability expectations
+ground_truth/multilingual.py    -- EN/MSA/EGY case construction
+ground_truth/registry.py         -- dataset identity -> ground-truth bundle
+retrieval_evaluator.py            -- metrics, case evaluation, aggregation,
+                                     Chroma artifact safety, baseline CLI
+diagnostics.py                     -- multilingual retrieval diagnostics
+benchmark.py, run_*.py              -- benchmark/diagnostic runners
+```
+
+Dependency rule, enforced by `tests/test_evaluation_boundary.py`:
+`evaluation -> runtime` is allowed, `runtime -> evaluation` never is.
+Evaluation is a cross-cutting observer and must never join the online query
+path. `retrieval_evaluator.py` remains internally multi-responsibility; that
+split is deferred (see `PROJECT_MEMORY.md`).
 
 ### `src/interfaces/`
 
@@ -345,11 +370,27 @@ full regression, artifact-integrity hashing).
    canonical renderer) and established the prompt trust boundary as a real
    `system`/`user` role separation rather than markdown delimiters. See
    `PROJECT_MEMORY.md`.
-6. **Knowledge pipeline organization** — group `extraction/`, `rendering/`,
-   `03_chunking.py`, `04_vector_representation.py`, `05_create_chroma_store.py`
-   under `knowledge/`.
-7. **Evaluation organization** — consolidate ground-truth/benchmark/
-   diagnostic modules under `evaluation/`.
+6. **Knowledge pipeline organization** (done, deliberately smaller than
+   originally sketched) — the transformation logic of `02_preprocessing.py`,
+   `03_chunking.py`, `04_vector_representation.py` and
+   `05_create_chroma_store.py` moved into `src/knowledge/`
+   (`preprocessing.py`, `chunking.py`, `indexing/{bm25,embeddings,vector_store}.py`);
+   the numbered scripts remain thin CLI orchestrators because `rebuild.py`
+   and four test modules depend on their CLI/import surface. `src/extraction/`
+   and `src/rendering/` were NOT renamed into `knowledge/`: both are already
+   cohesive packages, so renaming changes no responsibility while touching
+   every pipeline script and two query modules. A duplicate query-time
+   `hybrid_search()` was removed from the indexing script (a real
+   knowledge → rag violation). No `domain/` or `infrastructure/` package was
+   created — neither is justified by current evidence. See
+   `PROJECT_MEMORY.md`.
+7. **Evaluation organization** (done) — the nine evaluation library modules
+   moved from `tests/` to `src/evaluation/` byte-identically, with a
+   `ground_truth/` subpackage for the datasets and registry. No compatibility
+   shims (nothing outside `tests/` imported them). `runtime -> evaluation` is
+   now structurally enforced by test. `retrieval_evaluator.py` was NOT split
+   internally — relocating and re-splitting at once would violate
+   MOVE -> REWIRE -> VERIFY. See `PROJECT_MEMORY.md`.
 8. **Observability/cache reorganization** — only if evaluation shows it's
    warranted; not scheduled by default.
 
