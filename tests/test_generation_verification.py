@@ -9,6 +9,7 @@ test_faithfulness_baseline.py and is deliberately not duplicated here.
 
 from __future__ import annotations
 
+import pathlib
 from importlib import import_module
 from types import SimpleNamespace
 
@@ -334,3 +335,73 @@ def test_no_secret_is_logged_or_embedded_in_prompt():
     blob = " ".join(m["content"] for m in messages)
     for marker in ("GROQ_API_KEY", "Authorization", "Bearer "):
         assert marker not in blob
+
+
+# --- Trust-boundary parity across BOTH entry points (Phase A) ---------------
+#
+# Measured before this fix: the CLI produced provider payload roles ['user']
+# while the Streamlit path produced ['system', 'user']. The Step 5 hardening
+# therefore protected only one of the two interfaces. These pin the parity so
+# a future interface change cannot silently drop the system role again.
+
+
+def _capture_dispatch(module, attr, store):
+    def fake(prompt=None, api_key=None, model=None, messages=None,
+             max_tokens=1024, temperature=0.3):
+        store["prompt"] = prompt
+        store["messages"] = messages
+        return "Mocked answer citing [Source 1]."
+    setattr(module, attr, fake)
+
+
+def test_cli_generation_path_sends_system_and_user_roles(monkeypatch):
+    """chat.py::process_query() must send role-separated messages."""
+    chat = import_module("chat")
+    from src.conversation_memory import ConversationMemory
+
+    sent = {}
+    monkeypatch.setattr(chat.router_mod, "route_query",
+                        lambda q, artifact_paths=None: chat.router_mod.Route(
+                            path="semantic", confidence=1.0, reason="test", semantic_query=q))
+    monkeypatch.setattr(chat.router_mod, "execute_route",
+                        lambda route, semantic_k=5, original_query="", artifact_paths=None:
+                            SimpleNamespace(structured_result=None, semantic_chunks=[],
+                                            answerability=None, context=""))
+
+    def fake_generate(prompt=None, model=None, messages=None, **kwargs):
+        sent["messages"] = messages
+        return "answer"
+
+    monkeypatch.setattr(chat.prompting_mod, "generate_answer", fake_generate)
+    monkeypatch.setattr(chat.state, "artifact_paths", None, raising=False)
+    monkeypatch.setattr(chat.state, "mode", "hybrid", raising=False)
+    monkeypatch.setattr(chat.state, "history", [], raising=False)
+    monkeypatch.setattr(chat.state, "memory", ConversationMemory(), raising=False)
+
+    chat.process_query("How did Argentina play?")
+
+    assert sent["messages"] is not None, (
+        "chat.py sent no `messages=` -- the CLI fell back to a single combined "
+        "user message, losing the system/user trust boundary."
+    )
+    assert [m["role"] for m in sent["messages"]] == ["system", "user"]
+
+
+def test_both_entry_points_agree_on_roles():
+    """The two interfaces must not diverge on the trust boundary."""
+    from src.generation.prompt import build_messages
+
+    roles = [m["role"] for m in build_messages("q", "ctx")]
+    assert roles == ["system", "user"]
+    # Both chat.py and 07_prompting.py build their payload from this one
+    # helper; pinning it here keeps a single definition of the boundary.
+
+
+def test_cli_still_builds_the_legacy_prompt_string_for_debug():
+    """chat.py's /prompt debug command depends on state.last_prompt, so the
+    legacy single-string prompt must still be produced alongside messages."""
+    source = pathlib.Path("chat.py").read_text(encoding="utf-8")
+    assert "build_prompt(" in source and "build_messages(" in source, (
+        "chat.py must build BOTH the legacy prompt (for /prompt) and the "
+        "role-separated messages (for the provider)."
+    )

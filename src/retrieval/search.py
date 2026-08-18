@@ -117,6 +117,7 @@ __all__ = [
     "reciprocal_rank_fusion",
     "rerank",
     "hybrid_search",
+    "hybrid_candidates",
     "build_context",
     "retrieve_context",
 ]
@@ -235,6 +236,60 @@ def hybrid_search(
     Returns:
         Top-K results with RRF scores.
     """
+    # Phase 4: candidate generation (steps 1-8) is retrieval's own work and now
+    # lives in hybrid_candidates(); this function is the thin composition of
+    # retrieval + Context Engineering selection. Composition MUST stay
+    # `select(candidates(query, k), k)` with the SAME k -- see
+    # hybrid_candidates() for why "retrieve one deep pool, select at several k"
+    # is not equivalent.
+    candidates = hybrid_candidates(
+        query,
+        k=k,
+        bm25_k=bm25_k,
+        dense_k=dense_k,
+        level_filter=level_filter,
+        artifact_paths=artifact_paths,
+    )
+
+    # Step 9: Select chunks with answer-bearing query-facet coverage
+    selected = select_relevant_chunks(query, candidates, max_chunks=k)
+
+    # Step 10: Return selected Top-K
+    return selected
+
+
+def hybrid_candidates(
+    query: str,
+    k: int = 5,
+    bm25_k: int = 20,
+    dense_k: int = 20,
+    level_filter: str | None = None,
+    artifact_paths: ArtifactPaths | None = None,
+) -> list[dict]:
+    """
+    The retrieval half of the hybrid pipeline: BM25 + dense + fusion + rerank +
+    the entity/team/match safeguards + sibling expansion.
+
+    Returns the ordered candidate pool, BEFORE Context Engineering selects the
+    evidence subset. This is pure retrieval -- it does not import or call
+    src/context/.
+
+    **`k` is a retrieval parameter here, not just a context budget.** Three
+    safeguards consume it: `_ensure_comparison_entities`, `_ensure_team_style_doc`
+    and `_ensure_match_summary` test top-k membership (`results[:k]`), and the
+    last inserts at `min(k - 1, len(existing))`. The candidate pool is therefore
+    k-dependent -- measured 42 candidates at k=1 versus 44 at k>=3 for one
+    query. Consequently:
+
+        select_relevant_chunks(q, hybrid_candidates(q, k), k) == hybrid_search(q, k)
+            -- verified, 0 mismatches over 8 queries x k in {1,3,5,10}
+
+        select_relevant_chunks(q, hybrid_candidates(q, 10), k)  != hybrid_search(q, k)
+            -- measured 2/21 mismatches; do NOT compose this way.
+
+    Callers that want the selected evidence should use hybrid_search(), which
+    performs exactly the first composition above.
+    """
     # Step 1: BM25 retrieval
     bm25_results = bm25_search(query, k=bm25_k, artifact_paths=artifact_paths)
 
@@ -258,13 +313,7 @@ def hybrid_search(
     reranked = _ensure_match_summary(query, reranked, k, artifact_paths=artifact_paths)
 
     # Step 8: Expand siblings for query-matched entity documents
-    expanded = _expand_query_entity_siblings(query, reranked, artifact_paths=artifact_paths)
-
-    # Step 9: Select chunks with answer-bearing query-facet coverage
-    selected = select_relevant_chunks(query, expanded, max_chunks=k)
-
-    # Step 10: Return selected Top-K
-    return selected
+    return _expand_query_entity_siblings(query, reranked, artifact_paths=artifact_paths)
 
 
 # ---------------------------------------------------------------------------

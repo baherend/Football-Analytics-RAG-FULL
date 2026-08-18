@@ -50,6 +50,13 @@ from src.conversation_memory import (
 )
 from src.query.query_schema import ComparisonResult
 from src.query.router import route_and_execute
+# Phase B1: policy shared with chat.py::process_query() -- see
+# src/orchestration/policy.py for what is shared and what deliberately is not.
+from src.orchestration.policy import (
+    assemble_context,
+    finalize_answer,
+    should_refuse,
+)
 
 # ---------------------------------------------------------------------------
 # Compatibility re-exports -- see module docstring. chat.py, streamlit_app.py
@@ -79,6 +86,7 @@ from src.generation.provider import (
     DEFAULT_MODEL,
     GROQ_API_KEY,
     GROQ_API_URL,
+    GROQ_DIRECT_MODELS,
     GROQ_MODEL,
     MODELS,
     OPENROUTER_API_URL,
@@ -86,6 +94,8 @@ from src.generation.provider import (
     ask_groq,
     generate_answer,
     get_api_key,
+    offered_models,
+    resolve_model,
 )
 from src.verification.comparison import (
     validate_comparison_answer,
@@ -153,28 +163,27 @@ def answer_question(question: str, api_key: str | None = None,
 
     result = route_and_execute(retrieval_query, artifact_paths=artifact_paths)
     sr = getattr(result, "structured_result", None)
-    has_structured = is_usable_structured_result(sr)
 
-    if has_structured:
-        # Mirror chat.py::process_query()'s context assembly: present the
-        # structured fact as authoritative directly from `sr`, rather than
-        # `result.context` -- for a hybrid route, execute_route() overwrites
-        # `context` with semantic-only text after computing it, so the
-        # structured explanation would otherwise be silently dropped.
-        context = (
-            "## Authoritative Data (Verified from Match Facts)\n\n"
-            "The following numbers are VERIFIED and must be used EXACTLY:\n\n"
-            + sr.explanation
-        )
-        if result.semantic_chunks:
-            context += "\n\n" + format_context_for_prompt(result.semantic_chunks)
-    else:
-        context = result.context
+    # Phase B1: context assembly, the refusal gate, and post-generation
+    # verification + citations are the policy this entry point shares
+    # byte-for-byte with chat.py::process_query(); they now live in
+    # src/orchestration/policy.py. Routing, prompt construction and generation
+    # stay here -- tests stub them on this module by design.
+    #
+    # `fallback_context=result.context` preserves this entry point's original
+    # behavior when there is neither a usable structured result nor any chunk
+    # (execute_route() may have put a structured explanation there); chat.py
+    # legitimately falls back to its own message instead.
+    assembled = assemble_context(
+        result,
+        conversation_context=format_conversation_context(relevant_turns),
+        fallback_context=result.context,
+    )
+    has_structured = assembled.has_structured
+    context = assembled.context
+    full_context = assembled.full_context
 
-    conversation_context = format_conversation_context(relevant_turns)
-    full_context = f"{conversation_context}\n\n{context}" if conversation_context else context
-
-    if is_unsupported_query(sr, getattr(result, "answerability", None)):
+    if should_refuse(result):
         answer = INSUFFICIENT_CONTEXT_MESSAGE
         citations: list[dict] = []
     else:
@@ -193,16 +202,10 @@ def answer_question(question: str, api_key: str | None = None,
 
         answer = ask_groq(prompt, api_key=key, model=model, messages=messages)
 
-        if has_structured:
-            try:
-                validation = validate_structured_answer(answer, sr)
-                if not validation.is_valid:
-                    answer = validation.corrected_answer or answer
-            except Exception:
-                # Validation is best-effort -- don't break the pipeline.
-                pass
-
-        citations = build_user_citations(sr if has_structured else None, result.semantic_chunks)
+        # Post-generation verification + citations (shared policy).
+        finalized = finalize_answer(answer, result, has_structured)
+        answer = finalized.answer
+        citations = finalized.citations
 
     if memory is not None:
         memory.add_turn(artifact_paths, question, answer)

@@ -3,79 +3,57 @@
 > Rewritten at the start of each phase — do not append history here. Anything
 > worth keeping past this phase belongs in `PROJECT_MEMORY.md` instead.
 
-## Status: Migration Step 7 (Evaluation Organization) — COMPLETE, uncommitted
+## Status: Phase 4 (retrieval/context inversion) — COMPLETE, uncommitted
 
-Nine evaluation library modules moved from `tests/` to a new `src/evaluation/`
-package, byte-identically (`git mv`, content verified). 112 references
-rewritten across 17 files. `tests/` now holds only `test_*.py` + `__init__.py`.
-No compatibility shims — verified nothing outside `tests/` imported them.
+`src/retrieval/search.py` now separates the two stages:
 
-`runtime → evaluation` is now **structurally enforced**: an AST test proves no
-runtime layer or root script imports `src.evaluation` or `tests.*`.
+    hybrid_candidates(q, k, ...)   steps 1-8, pure retrieval, no context import
+    hybrid_search(q, k, ...)       select_relevant_chunks(q, candidates, k)
 
-Verified: ground-truth payload SHA-256, 24 semantic cases, registry key
-`(43, 106)`, EN/MSA/EGY bundles (24 each) and 9 metric values all unchanged;
-targeted 112 + 18 boundary tests; full suite **714 passed / 5 skipped /
-0 failed**; `output/chroma_db/` and `output/competitions/` untouched.
+Only `src/retrieval/search.py` changed in production code.
 
-## Evidence gathered before patching
+## Measured finding that shaped the design
 
-- **The dependency contract already holds**: no `src/` module and no root
-  script imports `tests.*`. `runtime → evaluation` is already NO — but it is
-  nowhere *enforced*, so nothing stops a future regression.
-- **9 non-`test_*` modules in `tests/` are evaluation library code**, not
-  tests (~5,586 lines): `semantic_ground_truth.py` (2439),
-  `retrieval_evaluator.py` (1561), `evaluation_benchmark.py` (421),
-  `run_multilingual_diagnostics.py` (368), `multilingual_retrieval_cases.py`
-  (295), `multilingual_diagnostics.py` (271), `answerability_ground_truth.py`
-  (134), `run_phase4_phase5.py` (103), `ground_truth_registry.py` (34).
-- **The mislocation is a real architectural smell, not aesthetics**:
-  `AGENT_RULES.md` §5 instructs agents to use
-  `tests/retrieval_evaluator.py::temporary_chroma_copy()`, and three `src/`
-  modules (`retrieval/search.py`, `retrieval/bm25.py`, `retrieval/safeguards.py`)
-  document a load-bearing cache-reset contract against
-  `tests/retrieval_evaluator.py`. Production design is constrained by a module
-  living in the test folder. `docs/architecture/overview.md` §4 already states
-  the goal: make these "importable without reaching into `tests/`".
-- **Migration surface is fully bounded and self-contained**: 69 import
-  statements and 34 string-literal patch targets, **all inside `tests/`**.
-  No external consumer → no compatibility shim needed (verified, not assumed).
-- **`retrieval_evaluator.py` is internally multi-responsibility** (metrics,
-  case evaluation, aggregation, runtime-module loading, Chroma artifact
-  safety, CLI — 12 sections). Splitting it is a *separate* concern from
-  relocating it; doing both at once would violate MOVE → REWIRE → VERIFY.
+`k` is **not** purely a context budget — three safeguards consume it for
+top-k membership and insertion position, so the candidate pool is k-dependent
+(42 candidates at k=1 vs 44 at k≥3 for one query). Therefore:
 
-## Scope
+- `select(hybrid_candidates(q, k), k) == hybrid_search(q, k)` → **0/32**
+- `select(hybrid_candidates(q, 10), k) != hybrid_search(q, k)` → **2/21**
 
-Move the 9 modules to `src/evaluation/`, byte-identically, with a
-`ground_truth/` subpackage for the 4 dataset/registry modules. Rewrite the
-imports and patch-target literals. Add structural boundary tests. Update the
-6 documentation/comment references (including `AGENT_RULES.md` §5 — a path
-change is exactly the kind of explicit architecture decision that file
-requires).
+The second composition is forbidden and guarded by test.
 
-## Deliberately NOT done
+## What was deliberately NOT done
 
-Splitting `retrieval_evaluator.py` internally (metrics / benchmarks /
-reporting sublayers) — deferred with no current consumer forcing it; no new
-evaluation contract types; no change to ground truth, thresholds, expected
-IDs, or benchmark definitions.
+`search.py` still imports `context.selection`: `hybrid_search()` must stay
+composed because `retrieval_evaluator.py` calls it per-K and treats the whole
+return as the ranked set. Removing the edge entirely means moving composition
+to `orchestration/` and repointing the evaluator — a change to the
+protected-baseline harness. No `Candidate` type introduced.
+
+## Verification
+
+0/32 real-data parity vs pre-patch baseline; ordering + object identity
+preserved; candidates unmutated; `retrieve_context()` still returns selected
+chunks; router gets 5 selected (pool 44), context 2628 chars < 3000 cap;
+provenance intact; roles still `['system','user']`. Targeted 292; full suite
+**786 passed / 5 skipped**. Expensive benchmark **skipped** — justified below.
+
+## Remaining debt
+
+`search.py → context.selection` import edge (isolated to one composition
+line); provider model liveness (product question); `retrieval_evaluator.py`
+split; Step 3 `intent.py → retrieval`; transitional boundaries; no
+`domain/`/`infrastructure/`; `resolve_output_dir` ID validation; BM25 pickle;
+4 library `print()` paths.
 
 ## Next Step
 
-Migration Step 8 (observability/cache reorganization) — the plan marks it
-"only if evaluation shows it's warranted; not scheduled by default". Before
-starting it, decide from evidence whether it is justified at all; the more
-valuable candidates are the open debts below.
-
-## Success Criteria (met)
-
-Ground-truth file bytes and payload hashes unchanged; 24 semantic cases and
-registry key `(43, 106)` unchanged; metric outputs unchanged; full suite
-≥696 passed / 5 skipped; `runtime → evaluation` proven absent by test;
-`output/chroma_db/` and `output/competitions/` untouched.
+Ask the product owner which Groq models are live (smallest remaining item).
+The `search.py → context.selection` edge should only be closed together with
+repointing the evaluator, in its own phase with a benchmark re-run.
 
 ## Out of Scope
 
-Migration Step 8; the 11 known open debts; retrieval/embedding/Arabic work;
-rebuilding indexes; new dependencies; committing or pushing.
+Step 8 observability (rejected on evidence), evaluator repointing,
+`retrieval_evaluator.py` split, `output/competitions/`, committing/pushing.

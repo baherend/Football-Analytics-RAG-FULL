@@ -147,9 +147,13 @@ with st.sidebar:
 
     st.subheader("Settings")
 
+    # Model vocabulary comes from the provider module (single source of truth)
+    # instead of being hardcoded here, where it could drift from the registry
+    # unnoticed. Same IDs, same order as before -- this deployment is Groq-only
+    # (it reads GROQ_API_KEY/GROQ_MODEL from st.secrets above).
     model = st.selectbox(
         "LLM Model",
-        ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it", "mixtral-8x7b-32768"],
+        list(rag.GROQ_DIRECT_MODELS),
         index=0,
     )
     k = st.slider("Sources to retrieve", 1, 5, 3)

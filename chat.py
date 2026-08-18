@@ -37,16 +37,6 @@ from src.dataset_catalog import discover_datasets
 # ---------------------------------------------------------------------------
 
 
-def load_module_from_path(name: str, path: str):
-    """Import a module from a file path (unlike importlib.import_module, which resolves by name via sys.path)."""
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
 # Load modules
 print("Loading RAG pipeline...")
 try:
@@ -57,13 +47,28 @@ try:
     # (router_mod.route_query(...), router_mod.execute_route(...)) so
     # nothing downstream in this file changes.
     import src.query.router as router_mod
+    # Phase B1: the answer policy this CLI shares with
+    # 07_prompting.py::answer_question() (context assembly, refusal gate,
+    # verification + citations). Routing, prompt building and generation stay
+    # here -- tests stub them on this module by design.
+    import src.orchestration.policy as orchestration
 except Exception as e:
     print(f"Error loading router (src.query.router): {e}")
     print("Make sure all dependencies are installed: pip install -r requirements.txt")
     raise SystemExit(1)
 
 try:
-    prompting_mod = load_module_from_path("prompting", "07_prompting.py")
+    # Phase B0 -- ONE canonical module identity. This used to load
+    # 07_prompting.py by file path under the name "prompting", which created a
+    # SECOND module instance: `chat.prompting_mod is import_module("07_prompting")`
+    # measured False, so module-level state and monkeypatches applied to only
+    # one copy. `07_prompting` is the canonical name (28 call sites across
+    # streamlit_app.py and tests use it; only this file used "prompting"), and
+    # import_module() accepts it despite the leading digit. The file-path
+    # loader that created the duplicate was removed with this change.
+    from importlib import import_module as _import_module
+
+    prompting_mod = _import_module("07_prompting")
 except Exception as e:
     print(f"Error loading prompting module (07_prompting.py): {e}")
     raise SystemExit(1)
@@ -166,70 +171,70 @@ def process_query(question: str) -> str:
         f"Reason: {route.reason}"
     )
 
-    # Step 3: Build context.
-    # Combine both paths so hybrid queries don't silently discard the exact
-    # structured answer. The structured result is presented first and flagged
-    # as authoritative; semantic chunks follow as supporting narrative.
-    parts = []
+    # Step 3/4: Build context (shared policy -- src/orchestration/policy.py).
+    # Structured facts first and flagged authoritative, retrieved chunks after,
+    # then the relevant conversation turns from Step 0 prepended as labeled,
+    # reference-only context that is never merged into the authoritative
+    # section. 07_prompting.py::answer_question() runs the identical policy;
+    # only `semantic_k` (5 here vs 3 there) and this fallback message differ,
+    # and both are genuine interface choices rather than duplication.
     sr = result.structured_result
-    has_structured = prompting_mod.is_usable_structured_result(sr)
-    if has_structured:
-        # Mark structured data as authoritative
-        parts.append(
-            "## Authoritative Data (Verified from Match Facts)\n\n"
-            "The following numbers are VERIFIED and must be used EXACTLY:\n\n"
-            + sr.explanation
-        )
-    if result.semantic_chunks:
-        parts.append(prompting_mod.format_context_for_prompt(result.semantic_chunks))
-
-    context = "\n\n".join(parts) if parts else "No relevant context found."
+    assembled = orchestration.assemble_context(
+        result,
+        conversation_context=format_conversation_context(relevant_turns),
+    )
+    has_structured = assembled.has_structured
+    context = assembled.context
+    full_context = assembled.full_context
 
     state.last_context = context
-
-    # Step 4: Build prompt, prepending relevant conversation context (found in
-    # Step 0) ahead of the retrieved football evidence. It is labeled as
-    # reference-only, non-authoritative context -- never merged into or
-    # presented alongside the "Authoritative Data" section above.
-    conversation_context = format_conversation_context(relevant_turns)
-    if conversation_context:
-        full_context = f"{conversation_context}\n\n{context}"
-    else:
-        full_context = context
 
     prompt = prompting_mod.build_prompt(question, full_context, has_structured=has_structured)
     state.last_prompt = prompt
 
+    # Trust boundary (security parity with 07_prompting.py::answer_question):
+    # send developer policy as a `system` message and retrieved evidence +
+    # question as a `user` message, so retrieved text cannot occupy the system
+    # role whatever it contains. Before this, the CLI sent one combined `user`
+    # message -- policy and untrusted evidence at the same privilege level,
+    # separated only by markdown delimiters -- while the Streamlit path was
+    # already hardened. `prompt` is still built (and still shown by /prompt)
+    # and is byte-identical to these two contents joined; see
+    # src/generation/prompt.py and tests/test_generation_verification.py.
+    messages = prompting_mod.build_messages(
+        question, full_context, has_structured=has_structured
+    )
+
     # Step 5: Generate answer
     state.history.append({"role": "user", "content": question})
     citations: list[dict] = []
-    if prompting_mod.is_unsupported_query(sr, getattr(result, "answerability", None)):
+    if orchestration.should_refuse(result):
         # No citation list for the deterministic refusal, even if evidence
         # was retrieved -- it was judged insufficient, so showing it here
         # would misleadingly imply it supports an answer it does not.
         answer = prompting_mod.INSUFFICIENT_CONTEXT_MESSAGE
     else:
         try:
-            answer = prompting_mod.generate_answer(prompt, model=state.model)
+            answer = prompting_mod.generate_answer(
+                prompt, model=state.model, messages=messages
+            )
         except Exception as e:
+            # CLI-only fallback: surface the retrieved context so the user can
+            # still see the evidence. Deliberately leaves citations empty --
+            # an error string has no sources -- which is why finalize_answer()
+            # runs only on the success path below.
             answer = f"[LLM Error: {e}]\n\nRetrieved context ({len(context)} chars, showing first 2000):\n{context[:2000]}..."
         else:
-            citations = prompting_mod.build_user_citations(
-                sr if has_structured else None, result.semantic_chunks,
-            )
-
-    # Step 6: Validate answer against structured facts
-    if has_structured:
-        try:
-            from prompting import validate_structured_answer
-            validation = validate_structured_answer(answer, sr)
-            if not validation.is_valid:
-                # Contradiction detected — use corrected answer
-                answer = validation.corrected_answer or answer
-                print(f"[VALIDATION] Contradiction detected: {validation}")
-        except Exception as e:
-            # Validation is best-effort — don't break the pipeline
-            pass
+            # Step 6: verification + citations (shared policy). Previously the
+            # validation block sat outside this branch, but it could only ever
+            # fire here: should_refuse() is true only when there is no usable
+            # structured result, so `has_structured` is always False on the
+            # refusal path.
+            finalized = orchestration.finalize_answer(answer, result, has_structured)
+            answer = finalized.answer
+            citations = finalized.citations
+            if finalized.corrected:
+                print(f"[VALIDATION] Contradiction detected: {finalized.validation}")
 
     state.last_citations = citations
     state.history.append({"role": "assistant", "content": answer})

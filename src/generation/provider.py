@@ -52,6 +52,54 @@ PROVIDER_KEYS = {
     "openrouter": "OPENROUTER_API_KEY",
 }
 
+# Raw Groq model IDs the Streamlit deployment offers directly.
+#
+# This module is the single source of truth for model vocabulary: the list
+# used to be hardcoded inside streamlit_app.py's selectbox, disconnected from
+# MODELS and unvalidated, so the two could drift silently.
+#
+# They are kept SEPARATE from MODELS rather than merged into it, on evidence:
+#
+#  * The two interfaces are two deployment models, not an accident. The CLI is
+#    multi-provider and OpenRouter-first (`DEFAULT_MODEL = "haiku"`; README
+#    documents OPENROUTER_API_KEY as the LLM generation key). Streamlit is a
+#    Groq-only deployment: it reads GROQ_API_KEY/GROQ_MODEL from st.secrets and
+#    calls ask_groq().
+#  * Merging would create duplicate menu entries for one model: the registry
+#    key "llama" and the raw id "llama-3.3-70b-versatile" resolve to the SAME
+#    Groq model (likewise "llama-8b" / "llama-3.1-8b-instant").
+#
+# This tuple records what the app *offers*; it asserts nothing about whether a
+# given ID is still live at Groq. That could not be established from the
+# repository (no manifest, no doc, no test), so no model was added or removed
+# here -- see PROJECT_MEMORY.md for the open product question.
+GROQ_DIRECT_MODELS: tuple[str, ...] = (
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "gemma2-9b-it",
+    "mixtral-8x7b-32768",
+)
+
+
+def resolve_model(model: str | None) -> tuple[str, str]:
+    """Resolve a model selection to ``(provider, provider_model_id)``.
+
+    A registry key wins; anything else is passed through as a raw Groq model
+    ID. That fall-through is a deliberate escape hatch, not an oversight: the
+    Streamlit deployment overrides GROQ_MODEL from st.secrets, so a Groq ID
+    this registry has never heard of must still dispatch. It is centralized
+    here so both the dispatcher and the boundary tests agree on one rule.
+    """
+    model_config = MODELS.get(model)
+    if model_config:
+        return model_config["provider"], model_config["model"]
+    return "groq", model
+
+
+def offered_models() -> tuple[str, ...]:
+    """Every model identifier any interface offers, registry keys first."""
+    return tuple(MODELS) + GROQ_DIRECT_MODELS
+
 
 def get_api_key(provider: str | None = None) -> str:
     """Resolve the API key for a provider from the environment."""
@@ -82,13 +130,7 @@ def generate_answer(
     """Generate an answer through the provider associated with ``model``."""
     import httpx
 
-    model_config = MODELS.get(model)
-    if model_config:
-        model_name = model_config["model"]
-        provider = model_config["provider"]
-    else:
-        model_name = model
-        provider = "groq"
+    provider, model_name = resolve_model(model)
 
     if not api_key:
         key_env = PROVIDER_KEYS.get(provider, "GROQ_API_KEY")
