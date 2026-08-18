@@ -1,7 +1,8 @@
 # Architecture Overview — Target Contract
 
-**Status**: migration in progress — steps 1-4 of §11 are done (retrieval
-split, understanding/planning split, context engineering), steps 5-8 remain.
+**Status**: migration in progress — steps 1-5 of §11 are done (retrieval
+split, understanding/planning split, context engineering, generation/
+verification split), steps 6-8 remain.
 Code HAS moved; §4's "today:" annotations and §11 track where each stage
 actually lives. This document describes where the codebase is going and why;
 `PROJECT_MEMORY.md` describes where it actually is right now, including the
@@ -116,8 +117,8 @@ retrieval/        -- today: src/retrieval/{bm25,dense,fusion,safeguards}.py + se
 reranking/         -- today: src/retrieval/fusion.py::rerank() (currently a no-op)
 context/            -- today: src/context/ (selection.py + rendering.py + evidence.py) -- split done, see §11 step 4
 answerability/       -- today: src/context/answerability.py
-generation/           -- today: 07_prompting.py's build_prompt/generate_answer
-verification/          -- today: 07_prompting.py's validate_answer/validate_structured_answer/validate_comparison_answer
+generation/           -- today: src/generation/ (prompt.py, provider.py, policy.py, citations.py) -- split done, see §11 step 5
+verification/          -- today: src/verification/ (validation.py, comparison.py) -- split done, see §11 step 5
 orchestration/          -- today: chat.py::process_query() + router.py::execute_route() (execution + the query package's transitional compatibility boundary), currently mixed together
 ```
 
@@ -276,11 +277,19 @@ Retrieved documents, external/web content, and tool output are **untrusted
 data**, architecturally — not instructions, regardless of where they were
 retrieved from or how authoritative they look. `rag/generation/` and
 `rag/verification/` must treat retrieved chunk text as content to reason
-about, never as directives to follow. This is a structural requirement
-(prompt construction must keep retrieved content in a clearly-delimited data
-region, distinct from system/developer instructions), not just a prompting
+about, never as directives to follow. This is a structural requirement, not just a prompting
 convention — see `AGENT_RULES.md` §9 for the same principle applied to agent
 work.
+
+**As implemented (step 5)**: `src/generation/prompt.py::build_messages()`
+emits `[{"role": "system", <policy>}, {"role": "user", <evidence + question>}]`
+and both provider adapters transmit that separation. Delimiters alone were
+previously the *only* barrier — every call sent one `user` message containing
+policy, evidence, and question together, so retrieved text sat at the same
+privilege level as the rules above it. The boundary is now the message role,
+which the model actually distinguishes. Hostile evidence text is **contained,
+not deleted**: it stays readable as evidence so the model can reason about it,
+it simply cannot be promoted to an instruction.
 
 ## 11. Migration Strategy
 
@@ -327,9 +336,15 @@ full regression, artifact-integrity hashing).
    consumer; see `PROJECT_MEMORY.md`. Two OPEN debts remain: `hybrid_search()`
    still calls the selector (retrieval → context inversion), and two divergent
    context renderers still exist (unify in step 5).
-5. **Generation + verification split** — separate `07_prompting.py`'s prompt
-   building, LLM calls, and answer validation into `rag/generation/` and
-   `rag/verification/`.
+5. **Generation + verification split** (done) — `07_prompting.py` (940 lines)
+   reduced to a 219-line coordinator; implementations moved to
+   `src/generation/` and `src/verification/`. Option C (coordinator +
+   extracted packages) was chosen because seven test modules monkeypatch
+   generation dependencies *on that module* and `chat.py` reaches eleven
+   attributes through it. Also closed step 4's divergent-renderer debt (one
+   canonical renderer) and established the prompt trust boundary as a real
+   `system`/`user` role separation rather than markdown delimiters. See
+   `PROJECT_MEMORY.md`.
 6. **Knowledge pipeline organization** — group `extraction/`, `rendering/`,
    `03_chunking.py`, `04_vector_representation.py`, `05_create_chroma_store.py`
    under `knowledge/`.

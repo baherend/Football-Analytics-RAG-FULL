@@ -94,30 +94,47 @@ def test_comparison_scaling_is_not_quadratic():
     """
     Structural guard beyond a single wall-clock threshold: doubling the input
     must not ~4x the time. The unbounded version measured a consistent 4.0x
-    per doubling; a linear scan stays near 2x (with generous slack for timer
-    noise on short runs).
+    per doubling; the bounded version measures a clean 2.0x from 4k to 32k
+    (verified with the `re` cache both warm and purged, so pattern-compile
+    cost -- 0.6ms, input-independent -- is not a factor).
+
+    Measurement noise only ever *inflates* a timing, never deflates it, so
+    the MINIMUM ratio observed across several attempts is the sound estimator
+    of true complexity: a linear implementation will produce a clean sample
+    on some attempt, while a quadratic one cannot. Taking the best of several
+    attempts (rather than a single one) keeps this robust when the full suite
+    runs it on a loaded machine -- a single-shot ratio produced a false
+    "quadratic" failure under full-suite load while the same code measured
+    exactly 2.0x in isolation.
     """
     def timed(n: int) -> float:
         payload = "a" * n
-        # Best of 3 -- reduces scheduler noise without making the test slow.
-        return min(
-            (lambda: (lambda t0: (intent._detect_comparison(payload), time.perf_counter() - t0)[1])(time.perf_counter()))()
-            for _ in range(3)
-        )
+        best = float("inf")
+        for _ in range(3):
+            start = time.perf_counter()
+            intent._detect_comparison(payload)
+            best = min(best, time.perf_counter() - start)
+        return best
 
-    small = timed(8_000)
-    large = timed(16_000)
+    ratios = []
+    for _ in range(5):
+        small = timed(8_000)
+        large = timed(16_000)
 
-    # Guard against a divide-by-zero on a very fast machine: if both are
-    # effectively instant, the pathological behavior is definitively gone.
-    if small < 1e-4:
-        assert large < 1e-2, f"16k took {large:.4f}s despite 8k being instant"
-        return
+        # On a very fast machine both can be effectively instant; that alone
+        # proves the pathological behavior is gone.
+        if small < 1e-4:
+            assert large < 1e-2, f"16k took {large:.4f}s despite 8k being instant"
+            return
 
-    ratio = large / small
-    assert ratio < 3.0, (
-        f"doubling input scaled time by {ratio:.1f}x (8k={small:.4f}s, "
-        f"16k={large:.4f}s) -- quadratic backtracking appears to have returned."
+        ratios.append(large / small)
+        if ratios[-1] < 3.0:
+            return   # a clean linear sample -- definitive
+
+    assert min(ratios) < 3.0, (
+        f"doubling input scaled time by {min(ratios):.1f}x at best across "
+        f"{len(ratios)} attempts (ratios={[round(r, 1) for r in ratios]}) -- "
+        "quadratic backtracking appears to have returned."
     )
 
 

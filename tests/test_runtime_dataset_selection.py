@@ -343,7 +343,15 @@ def test_chat_validation_threads_structured_metric(monkeypatch):
             corrected_answer=None,
         )
 
-    monkeypatch.setattr(chat.prompting_mod, "validate_answer", fake_validate_answer)
+    # Migration Step 5: validate_structured_answer() moved from 07_prompting.py
+    # to src/verification/comparison.py, so it now resolves validate_answer()
+    # through that module's namespace rather than 07_prompting's globals.
+    # Patch where the call actually resolves. The contract under test is
+    # unchanged: chat.py's structured path must thread the structured metric
+    # into validation.
+    import src.verification.comparison as verification_comparison
+
+    monkeypatch.setattr(verification_comparison, "validate_answer", fake_validate_answer)
 
     chat.process_query("How many goals did Jamie Vardy score?")
 
