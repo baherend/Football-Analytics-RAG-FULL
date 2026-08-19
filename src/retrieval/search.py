@@ -79,21 +79,29 @@ from src.retrieval.fusion import RRF_K, reciprocal_rank_fusion, rerank
 from src.retrieval.safeguards import (
     _AR_BETTER_WORD,
     _AR_LATIN_ENTITY,
-    _LATIN_ENTITY_SPAN,
     _MATCH_QUERY_PATTERNS,
     _STAGE_KEYWORDS,
-    _STYLE_KEYWORDS,
-    _STYLE_KEYWORDS_AR,
     _detect_comparison_entities,
     _detect_match_query,
-    _detect_team_style_entities,
-    _detect_team_style_query,
     _ensure_comparison_entities,
     _ensure_match_summary,
     _ensure_team_style_doc,
     _expand_query_entity_siblings,
-    _extract_latin_entity_spans,
     _find_l4_document,
+)
+# Phase 5: team-style classification is no longer owned by the retrieval
+# package -- it moved to the neutral src/team_style.py so the UNDERSTAND stage
+# (src/query/intent.py) could stop importing retrieval to classify a query.
+# Re-exported here unchanged because tests/ and src/query/router.py reach these
+# names through this module; the re-export points at the new owner rather than
+# laundering them through safeguards.py a second time.
+from src.team_style import (
+    _LATIN_ENTITY_SPAN,
+    _STYLE_KEYWORDS,
+    _STYLE_KEYWORDS_AR,
+    _detect_team_style_entities,
+    _detect_team_style_query,
+    _extract_latin_entity_spans,
     _normalize_arabic_for_matching,
 )
 # Context Engineering (Migration Step 4): evidence selection and context

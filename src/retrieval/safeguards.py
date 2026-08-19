@@ -18,6 +18,15 @@ from __future__ import annotations
 import re
 
 from src.artifacts import ArtifactPaths
+# Phase 5: team-style classification moved to the neutral src/team_style.py so
+# that src/query/intent.py can classify a query without importing retrieval.
+# Imported back here for the two safeguards that genuinely need it:
+# _detect_comparison_entities() shares the Arabic matching normalizer, and
+# _ensure_team_style_doc() below uses the entity detector.
+from src.team_style import (
+    _detect_team_style_entities,
+    _normalize_arabic_for_matching,
+)
 
 
 def _get_chunks(artifact_paths: ArtifactPaths | None = None) -> list[dict]:
@@ -42,75 +51,6 @@ def _get_chunks(artifact_paths: ArtifactPaths | None = None) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Arabic Safeguard-Trigger Normalization
-# ---------------------------------------------------------------------------
-#
-# Light, deterministic normalization used ONLY for recognizing safeguard
-# trigger phrases below -- never applied to the query actually sent to
-# BM25/Dense retrieval. Unifies the most common Arabic spelling variants
-# (alef-hamza forms, alef maksura) so that e.g. the benchmark's "ازاي" and
-# the equally common "إزاي" both match the same trigger phrase, without
-# needing to enumerate every spelling separately.
-
-
-def _normalize_arabic_for_matching(text: str) -> str:
-    for variant in ("أ", "إ", "آ"):
-        text = text.replace(variant, "ا")
-    text = text.replace("ى", "ي")
-    # Collapse runs of whitespace (spaces/tabs/newlines) to a single space
-    # so multi-word trigger phrases (e.g. "بتلعب ازاي") still match a
-    # literal substring check when a query has irregular spacing.
-    return re.sub(r"\s+", " ", text)
-
-
-# A Latin-script span (canonical player/team name) inside an otherwise
-# Arabic query -- used to recover the entity a safeguard should boost.
-# Arabic-transliterated entity names (e.g. "ميسي") are a separate,
-# deliberately deferred problem; this phase's queries keep entities in
-# their canonical Latin form.
-#
-# Bounded to 60 characters (a generous margin over the longest real full
-# names in the dataset, e.g. "Abdulelah Saad Hameed Al-Malki" = 31 chars):
-# an earlier unbounded `[A-Za-z .'\-]*` here allowed the shared prefix
-# between the quantified class and the trailing `[A-Za-z]` to create
-# O(N) redundant backtracking splits per match attempt. Bounding it caps
-# the worst-case backtracking search space to a constant, independent of
-# input length -- verified with adversarial stress tests (see
-# tests/test_arabic_safeguards.py's ReDoS regression tests).
-_LATIN_ENTITY_SPAN = re.compile(r"[A-Za-z][A-Za-z .'\-]{0,58}[A-Za-z]|[A-Za-z]")
-
-
-def _extract_latin_entity_spans(query: str, max_entities: int = 5) -> list[str]:
-    """
-    Every distinct contiguous Latin-script span in `query`, in order of
-    first appearance, case-insensitively de-duplicated, bounded to
-    `max_entities`.
-
-    A single-entity query (e.g. gt-multi-03: "...Morocco...") returns
-    exactly one span. A genuinely multi-entity query (e.g. gt-multi-04:
-    "...Argentina وFrance...") returns all of them -- a caller must not
-    silently act on only the first when more than one is present (see
-    _detect_team_style_entities). `max_entities` bounds the amount of work
-    a pathological input can force, consistent with this module's other
-    bounded-regex hardening.
-    """
-    seen_lower: set[str] = set()
-    spans: list[str] = []
-    for match in _LATIN_ENTITY_SPAN.finditer(query):
-        span = match.group(0).strip(" .'-")
-        if len(span) <= 2:
-            continue
-        span_lower = span.lower()
-        if span_lower in seen_lower:
-            continue
-        seen_lower.add(span_lower)
-        spans.append(span)
-        if len(spans) >= max_entities:
-            break
-    return spans
-
-
-# ---------------------------------------------------------------------------
 # Comparison Entity Detection
 # ---------------------------------------------------------------------------
 
@@ -120,7 +60,8 @@ def _extract_latin_entity_spans(query: str, max_entities: int = 5) -> list[str]:
 # English, so an equivalent broad fallback would create excessive false
 # positives -- see test_comparison_no_false_positive_on_and_without_comparison_words.
 _AR_BETTER_WORD = r"(?:احسن|افضل)"
-# Bounded to 60 characters -- see _LATIN_ENTITY_SPAN's comment above for
+# Bounded to 60 characters -- see _LATIN_ENTITY_SPAN's comment in
+# src/team_style.py for
 # why an unbounded quantifier here is a regex-complexity (ReDoS) risk,
 # confirmed via adversarial stress testing: the un-anchored patterns below
 # (no fixed literal prefix for re.search to fast-scan for) combine
@@ -295,106 +236,6 @@ def _ensure_comparison_entities(
         return deduped
 
     return results
-
-
-# ---------------------------------------------------------------------------
-# Team Style Query Detection
-# ---------------------------------------------------------------------------
-
-_STYLE_KEYWORDS = {
-    "style",
-    "formation",
-    "formations",
-    "play pattern",
-    "play patterns",
-    "passing pattern",
-    "passing patterns",
-    "tactics",
-    "approach",
-    "playing style",
-    "how they play",
-    "how they played",
-}
-
-# Normalized (post alef-substitution) MSA/Egyptian team-style/formation/
-# tactics trigger phrases. Arabic morphology means a stem like "تشكيل"
-# already appears as a substring of its inflected/definite forms
-# (التشكيل, تشكيلات, التشكيلات, ...), unlike English where "formation" and
-# "formations" needed two separate entries.
-_STYLE_KEYWORDS_AR = {
-    "اسلوب",                 # style (اسلوب اللعب, اسلوبهم, باسلوب, ...)
-    "تشكيل",                  # formation/lineup and its inflected forms
-    "خطة",                   # tactical plan (الخطة, بخطة, ...)
-    "نمط التمرير",            # passing pattern
-    "انماط التمرير",          # passing patterns
-    "لعبت ازاي",              # played how (EGY)
-    "لعبوا ازاي",             # played how, plural (EGY)
-    "بتلعب ازاي",             # is/was playing how (EGY)
-    "يلعبوا ازاي",            # they play how (EGY)
-    "كان عامل ازاي",          # was like how (EGY)
-    "لعبهم كان عامل ازاي",     # their play was like how (EGY)
-}
-
-
-def _detect_team_style_entities(query: str) -> list[str]:
-    """Return every team name a team-style/formation/tactics query names,
-    or [] if it isn't a team-style query at all.
-
-    English: at most one entity (unchanged, existing regex-based
-    extraction -- English multi-entity extraction is out of scope for
-    this fix; see _detect_team_style_query's docstring). MSA/Egyptian:
-    every distinct Latin-script entity found (see
-    _extract_latin_entity_spans) -- a query naming two teams (e.g. a
-    style-comparison "multi" case such as gt-multi-04) gets both, instead
-    of silently collapsing to whichever team is mentioned first."""
-    query_lower = query.lower().strip()
-
-    if any(keyword in query_lower for keyword in _STYLE_KEYWORDS):
-        patterns = [
-            (
-                r"^(?:what\s+(?:was|were)\s+|describe\s+|how\s+did\s+)?"
-                r"(.+?)(?:['?]s|s')\s+"
-                r"(?:passing\s+patterns?|(?:most\s+common\s+)?formations?|"
-                r"tactics|approach|(?:playing\s+)?style)\b"
-            ),
-            r"^(.+?)(?:['?]s|s')\s+(?:playing\s+)?style\b",
-            r"^(?:what\s+(?:was|were)|how\s+did)\s+(.+?)\s+play\b",
-            r"^(?:describe\s+)?(.+?)\s+(?:formations?|tactics|approach)\b",
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, query_lower)
-            if not match:
-                continue
-
-            team_name = match.group(1).strip(" ,.?")
-            team_name = re.sub(
-                r"^(?:what\s+(?:was|were)|how\s+did|describe)\s+",
-                "",
-                team_name,
-            ).strip()
-
-            if len(team_name) > 2:
-                return [team_name.title()]
-
-        return []
-
-    normalized = _normalize_arabic_for_matching(query_lower)
-    if any(keyword in normalized for keyword in _STYLE_KEYWORDS_AR):
-        return [entity.title() for entity in _extract_latin_entity_spans(query)]
-
-    return []
-
-
-def _detect_team_style_query(query: str) -> str | None:
-    """Return the team name for a team-style/formation/tactics query when
-    exactly one team is named, otherwise None -- including when the query
-    names MULTIPLE teams (ambiguous which one a single-value caller should
-    use; see _detect_team_style_entities for the multi-team case, used by
-    _ensure_team_style_doc)."""
-    entities = _detect_team_style_entities(query)
-    return entities[0] if len(entities) == 1 else None
-
 
 def _ensure_team_style_doc(
     query: str,

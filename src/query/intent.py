@@ -18,13 +18,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-# `_detect_team_style_query` is imported from src.retrieval.search (rather
-# than from src.retrieval.safeguards, where it is now defined) to keep this
-# extraction strictly mechanical: router.py resolved it through that module
-# before this split, and src/retrieval/search.py re-exports it. This is a
-# known understanding -> retrieval cross-layer dependency, recorded as debt in
-# PROJECT_MEMORY.md rather than silently rerouted during a structural phase.
-from src.retrieval.search import _detect_team_style_query
+# Phase 5 closed the understanding -> retrieval reverse dependency that used to
+# sit here (this module imported _detect_team_style_query from
+# src.retrieval.search). Team-style detection is pure text classification, not
+# retrieval, so it now lives in the neutral shared module src/team_style.py --
+# the same flat-shared-module convention as src/stage_taxonomy.py. Both the
+# UNDERSTAND stage and src/retrieval/safeguards.py depend downward on it
+# instead of sideways on each other.
+from src.team_style import _detect_team_style_query
 from src.query.resolver import resolve_entity_type
 from src.query.vocab import resolve_metric
 

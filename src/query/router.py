@@ -47,10 +47,12 @@ from src.context.answerability import (
 )
 from src.context.evidence import EvidencePack
 from src.context.rendering import build_context
-from src.retrieval.search import (
-    _detect_team_style_query,
-    hybrid_search,
-)
+from src.retrieval.search import hybrid_search
+# Phase 5: the team-style classifier moved out of retrieval into the neutral
+# src/team_style.py. This module keeps importing hybrid_search from retrieval --
+# that edge is execution calling the RETRIEVE stage, which follows the runtime
+# flow -- but it no longer reaches into retrieval for classification.
+from src.team_style import _detect_team_style_query
 from src.query.query_schema import (
     StructuredQuery, StructuredResult, Filter, ComparisonResult, ComparisonValue,
 )
