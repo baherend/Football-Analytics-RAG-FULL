@@ -3,70 +3,65 @@
 > Rewritten at the start of each phase — do not append history here. Anything
 > worth keeping past this phase belongs in `PROJECT_MEMORY.md` instead.
 
-## Status: Phase 5 (shared team-style classifier relocation) — COMPLETE, uncommitted
+## Status: Phase 7 (`hybrid_search()` ownership reassessment) — STOPPED on evidence
 
-Closed the last *understanding → retrieval* reverse dependency. Before:
+**Decision: H2 — `hybrid_search()` stays in `src/retrieval/search.py`.**
+No production code changed. This was an assessment; nothing was half-migrated.
 
-    src/query/intent.py  ──imports _detect_team_style_query──►  src/retrieval/search.py
+## Why H1 (move to `src/orchestration/`) is not viable
 
-After — both layers depend downward on neutral shared vocabulary:
+Phase 4 did make the function thin — it is now only:
 
-    src/query/intent.py       ──►  src/team_style.py  ◄──  src/retrieval/safeguards.py
-    src/query/router.py       ──►                          src/retrieval/search.py (re-export)
+    select_relevant_chunks(hybrid_candidates(q, k), k)
 
-`src/team_style.py` imports **only `re`**. It owns the 7 relocated symbols:
-`_detect_team_style_query`, `_detect_team_style_entities`, `_STYLE_KEYWORDS`,
-`_STYLE_KEYWORDS_AR`, `_normalize_arabic_for_matching`,
-`_extract_latin_entity_spans`, `_LATIN_ENTITY_SPAN`.
+So the *body* is extractable. The blocker is the dependency direction. The
+committed Phase B1 contract `test_runtime_layers_do_not_import_orchestration`
+forbids importing `src.orchestration` from **all seven** runtime roots:
+`retrieval`, `query`, `context`, `generation`, `verification`, `knowledge`,
+`evaluation`. Every route out of `search.py` needs exactly that import:
 
-## Why the normalizer moved too
+| Route | Required import | Verdict |
+| --- | --- | --- |
+| `retrieve_context()` stays and calls it (search.py:357) | `retrieval → orchestration` | forbidden |
+| `router.py` calls it (2 sites) | `query → orchestration` | forbidden |
+| evaluator binds `retrieval_module.hybrid_search` | evaluator change, or a re-export that itself imports orchestration | forbidden / protected |
+| keep a compat re-export in `search.py` | `retrieval → orchestration` | forbidden, and shim-only cleanliness |
 
-`_normalize_arabic_for_matching()` is shared by a *moving* function
-(`_detect_team_style_entities`) and a *staying* one
-(`_detect_comparison_entities`, which remains in `safeguards.py`). Leaving it
-behind would have created `team_style → retrieval` — the very edge being
-removed. Duplicating it would let two copies drift. It moved, and
-`safeguards.py` imports it back. This is the one naming compromise in the
-phase: a general Arabic helper lives in a module named for team style.
-Disclosed in the module docstring and in `PROJECT_MEMORY.md`.
+There is no ordering of these that avoids the violation.
 
-## Files changed
+## Two findings that shrink the case for moving it at all
 
-| File | Change |
-| --- | --- |
-| `src/team_style.py` | **new** — 7 symbols, moved AST-verbatim |
-| `src/retrieval/safeguards.py` | −181 lines; imports the 2 symbols it still *uses* |
-| `src/retrieval/search.py` | compat re-exports repointed at the new owner |
-| `src/query/intent.py` | imports the classifier from `src.team_style` |
-| `src/query/router.py` | classifier from `src.team_style`; keeps `hybrid_search` from retrieval |
-| `tests/test_team_style_boundary.py` | **new** — 19 guard tests |
+1. **The move would not close the `retrieval → context` inversion.** `search.py`
+   still imports `build_context` for `retrieve_context()` (search.py:373)
+   whether or not `hybrid_search()` leaves. The architectural gain is smaller
+   than the Phase 6 write-up implied.
+2. **No runtime import cycle would occur** — the
+   `orchestration → verification → src.query.query_schema` chain ends at a leaf
+   dataclass module. So this is a *layering-contract* violation, not an
+   `ImportError`. That distinction matters: it means the constraint is a
+   deliberate decision, not a technical accident, and is already machine-enforced.
 
 ## Verification
 
-- **Verbatim**: all 7 symbols AST-compared source-segment-identical to their
-  pre-move form; `team_style.py` contains no other top-level definitions.
-- **Characterization**: 96/96 cases identical to the pre-change baseline across
-  `classify` / `comparison` / `detect_entities` / `detect_query` /
-  `latin_spans` / `normalize` (EN + MSA + EGY).
-- **Real-data parity**: `hybrid_search(k=5)` and `_ensure_team_style_doc(k=3,5)`
-  on the production index — identical pre vs post when run through the *same*
-  script against stashed pre-change code. (An initial mismatch was a defect in
-  the replay recipe, not in the code; confirmed by that apples-to-apples run
-  plus a determinism check.)
-- **Suite**: **805 passed / 5 skipped** (786 baseline + the 19 new tests).
-- `git diff --check` clean. `output/chroma_db/chroma.sqlite3` bookkeeping touch
-  restored (31,444,992 bytes). `output/competitions/` untouched.
+- **Production diff: empty.** `git diff -- src/ *.py` returns nothing.
+- **Full suite: 809 passed / 5 skipped** — unchanged baseline.
+- **Characterization parity (8 × 4 k) not run, deliberately**: no production
+  code changed, so it would compare identical bytecode to itself. Per §9, the
+  expensive multilingual benchmark was also skipped — no retrieval semantics,
+  ordering, candidate generation, evaluator contract, or cache behavior changed.
+- **No new guard test added**: the constraint is already enforced by the
+  committed `test_runtime_layers_do_not_import_orchestration`.
 
-## Retained compatibility edges (deliberate)
+## Prerequisites before this can be reconsidered
 
-- `src/retrieval/search.py` still re-exports all 7 symbols — `tests/` and
-  `router.py` reach them through it. The re-exports now point at
-  `src.team_style` (the real owner) rather than laundering through
-  `safeguards.py` a second time; identity is pinned by test.
-- `src/query/router.py → src/retrieval/search.py::hybrid_search` remains. This
-  is execution calling the RETRIEVE stage — forward in the runtime flow, not a
-  reverse edge.
+1. The evaluator's contract that **one** module (`src.retrieval.search`) owns
+   `hybrid_search` + `bm25_search` + `dense_search` + `CHROMA_DIR` + both caches.
+2. `retrieve_context()`'s residence in `search.py`.
+
+Until those two move, `search.py` legitimately owns `hybrid_search()` and the
+facade is not merely transitional.
 
 ## Not committed
 
-No `git add`, `git commit`, or `git push` was run.
+No `git add`, `git commit`, or `git push` was run. `output/competitions/`
+untouched.
