@@ -161,7 +161,7 @@ def test_semantic_ground_truth_is_unchanged():
 def test_ground_truth_registry_still_keys_the_wc2022_identity():
     import src.evaluation.ground_truth.registry as registry
 
-    assert sorted(registry._REGISTRY.keys()) == [(43, 106)]
+    assert sorted(registry._REGISTRY.keys()) == [(2, 27), (43, 106)]
 
 
 def test_multilingual_bundle_still_builds_24_cases():

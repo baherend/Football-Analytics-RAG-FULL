@@ -4,6 +4,11 @@ from src.evaluation.ground_truth.semantic import (
     SEMANTIC_GROUND_TRUTH_METADATA,
     validate_semantic_ground_truth,
 )
+from src.evaluation.ground_truth.epl_2015_16 import (
+    EPL_2015_16_GROUND_TRUTH,
+    EPL_2015_16_GROUND_TRUTH_METADATA,
+    validate_epl_2015_16_ground_truth,
+)
 
 
 class GroundTruthNotRegisteredError(RetrievalEvaluationError):
@@ -15,6 +20,11 @@ _REGISTRY = {
         metadata=SEMANTIC_GROUND_TRUTH_METADATA,
         cases=SEMANTIC_GROUND_TRUTH,
         validate_fn=validate_semantic_ground_truth,
+    ),
+    (2, 27): GroundTruthBundle(
+        metadata=EPL_2015_16_GROUND_TRUTH_METADATA,
+        cases=EPL_2015_16_GROUND_TRUTH,
+        validate_fn=validate_epl_2015_16_ground_truth,
     ),
 }
 

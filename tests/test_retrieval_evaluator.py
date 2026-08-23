@@ -2050,7 +2050,7 @@ def test_run_retrieval_baseline_refuses_non_wc2022_namespaced_dataset_without_gr
     from src.artifacts import ArtifactPaths
     from src.evaluation.retrieval_evaluator import RetrievalEvaluationError, run_retrieval_baseline
 
-    selected = ArtifactPaths(2, 27, output_root=tmp_path)
+    selected = ArtifactPaths(999, 999, output_root=tmp_path)
 
     with pytest.raises(RetrievalEvaluationError, match="Ground Truth"):
         run_retrieval_baseline(artifact_paths=selected)
@@ -2229,7 +2229,7 @@ def test_cli_refuses_namespaced_dataset_without_ground_truth_benchmark(capsys):
     """Selecting a namespaced competition/season on the CLI fails clearly, not silently."""
     from src.evaluation.retrieval_evaluator import main
 
-    exit_code = main(["--competition-id", "2", "--season-id", "27"])
+    exit_code = main(["--competition-id", "999", "--season-id", "999"])
 
     assert exit_code == 1
     captured = capsys.readouterr()
