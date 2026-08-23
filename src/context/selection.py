@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from collections import Counter
 
 
 # Latin letters/digits (unchanged) plus Arabic letters+diacritics
@@ -30,6 +31,58 @@ _ENTITY_METADATA_FIELDS = {
     "home_team",
     "away_team",
 }
+
+_MONTH_NUMBERS = {
+    "january": 1, "jan": 1,
+    "february": 2, "feb": 2,
+    "march": 3, "mar": 3,
+    "april": 4, "apr": 4,
+    "may": 5,
+    "june": 6, "jun": 6,
+    "july": 7, "jul": 7,
+    "august": 8, "aug": 8,
+    "september": 9, "sep": 9, "sept": 9,
+    "october": 10, "oct": 10,
+    "november": 11, "nov": 11,
+    "december": 12, "dec": 12,
+}
+
+
+def _extract_query_match_dates(query: str) -> set[str]:
+    """Extract explicit match dates from a query as YYYY-MM-DD values."""
+    query_lower = query.casefold()
+    dates: set[str] = set()
+
+    for year, month, day in re.findall(
+        r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b",
+        query_lower,
+    ):
+        try:
+            dates.add(f"{int(year):04d}-{int(month):02d}-{int(day):02d}")
+        except ValueError:
+            pass
+
+    month_names = "|".join(
+        sorted((re.escape(name) for name in _MONTH_NUMBERS), key=len, reverse=True)
+    )
+
+    for day, month_name, year in re.findall(
+        rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({month_names})\s+(\d{{4}})\b",
+        query_lower,
+    ):
+        dates.add(
+            f"{int(year):04d}-{_MONTH_NUMBERS[month_name]:02d}-{int(day):02d}"
+        )
+
+    for month_name, day, year in re.findall(
+        rf"\b({month_names})\s+(\d{{1,2}})(?:st|nd|rd|th)?(?:,)?\s+(\d{{4}})\b",
+        query_lower,
+    ):
+        dates.add(
+            f"{int(year):04d}-{_MONTH_NUMBERS[month_name]:02d}-{int(day):02d}"
+        )
+
+    return dates
 
 
 def _normalize_token(token: str) -> str:
@@ -87,6 +140,33 @@ def select_relevant_chunks(
     if not raw_query_terms:
         return []
 
+    query_match_dates = _extract_query_match_dates(query)
+
+    exact_fixture_positions: set[int] = set()
+    if query_match_dates:
+        for position, chunk in enumerate(chunks):
+            metadata = chunk.get("metadata", {})
+            if not isinstance(metadata, dict):
+                continue
+
+            home_team = metadata.get("home_team")
+            away_team = metadata.get("away_team")
+            match_date = str(metadata.get("match_date", ""))
+
+            if not home_team or not away_team or match_date not in query_match_dates:
+                continue
+
+            home_terms = _content_terms(str(home_team))
+            away_terms = _content_terms(str(away_team))
+
+            if (
+                home_terms
+                and away_terms
+                and home_terms <= raw_query_terms
+                and away_terms <= raw_query_terms
+            ):
+                exact_fixture_positions.add(position)
+
     entity_terms_by_chunk = [
         _chunk_entity_terms(chunk)
         for chunk in chunks
@@ -102,6 +182,21 @@ def select_relevant_chunks(
 
     for position, chunk in enumerate(chunks):
         chunk_entity_terms = entity_terms_by_chunk[position]
+        metadata = chunk.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        has_fixture_metadata = bool(
+            metadata.get("home_team")
+            and metadata.get("away_team")
+            and metadata.get("match_date")
+        )
+        if (
+            exact_fixture_positions
+            and has_fixture_metadata
+            and position not in exact_fixture_positions
+        ):
+            continue
 
         if (
             mentioned_entity_terms
@@ -121,12 +216,28 @@ def select_relevant_chunks(
 
     selected: list[dict[str, Any]] = []
     covered: set[str] = set()
+    selected_document_ids: set[str] = set()
+    source_priority = {
+        "match_pair_boost": 2,
+        "match_fixture_expansion": 1,
+    }
+    document_counts = Counter((c.get("metadata", {}).get("document_id") or c.get("document_id")) for _, c, _ in candidates)
 
     while candidates and len(selected) < max_chunks:
         best_index = max(
             range(len(candidates)),
             key=lambda index: (
+                source_priority.get(candidates[index][1].get("source"), 0),
                 len(candidates[index][2] - covered),
+                (
+                    document_counts.get(
+                        candidates[index][1].get("metadata", {}).get("document_id")
+                        or candidates[index][1].get("document_id"),
+                        0,
+                    )
+                    if selected
+                    else 0
+                ),
                 len(candidates[index][2]),
                 -candidates[index][0],
             ),
@@ -134,11 +245,23 @@ def select_relevant_chunks(
 
         _, chunk, chunk_coverage = candidates.pop(best_index)
         new_coverage = chunk_coverage - covered
+        metadata = chunk.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        document_id = metadata.get("document_id") or chunk.get("document_id")
 
         if not new_coverage:
+            if chunk.get("source") == "match_fixture_expansion":
+                if document_id not in selected_document_ids:
+                    selected.append(chunk)
+                    if document_id:
+                        selected_document_ids.add(document_id)
+                continue
             break
 
         selected.append(chunk)
+        if document_id:
+            selected_document_ids.add(document_id)
         covered.update(new_coverage)
 
     # Coverage selection can exhaust the available query facets before
@@ -153,6 +276,22 @@ def select_relevant_chunks(
             continue
 
         chunk_entity_terms = entity_terms_by_chunk[position]
+        metadata = chunk.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        has_fixture_metadata = bool(
+            metadata.get("home_team")
+            and metadata.get("away_team")
+            and metadata.get("match_date")
+        )
+        if (
+            exact_fixture_positions
+            and has_fixture_metadata
+            and position not in exact_fixture_positions
+        ):
+            continue
+
         if (
             mentioned_entity_terms
             and chunk_entity_terms

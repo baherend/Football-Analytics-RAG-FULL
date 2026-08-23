@@ -1783,3 +1783,123 @@ def test_dense_search_model_index_mismatch_fails_clearly_not_silently(monkeypatc
         router.dense_search("test query", artifact_paths=mpnet_paths)
 
     assert "does not exist" in str(exc_info.value) or isinstance(exc_info.value, chromadb.errors.NotFoundError)
+
+def test_sibling_expansion_recovers_entities_from_raw_chunk_metadata(tmp_path):
+    """Sibling expansion must recover match entities from raw chunks when
+    retrieval metadata omits home_team/away_team."""
+    from importlib import import_module
+
+    router = import_module("src.retrieval.search")
+    paths = ArtifactPaths(competition_id=3, season_id=1, output_root=tmp_path)
+
+    raw_chunks = [
+        {
+            "chunk_id": "match-1-chunk-0",
+            "document_id": "match-1-doc",
+            "level": "2",
+            "match_id": 1,
+            "text": "Match summary",
+            "search_text": "Match summary",
+            "metadata": {
+                "home_team": "Team B",
+                "away_team": "Team C",
+            },
+        },
+        {
+            "chunk_id": "match-1-chunk-1",
+            "document_id": "match-1-doc",
+            "level": "2",
+            "match_id": 1,
+            "text": "Sibling evidence",
+            "search_text": "Sibling evidence",
+            "metadata": {
+                "home_team": "Team B",
+                "away_team": "Team C",
+            },
+        },
+    ]
+    paths.chunks.parent.mkdir(parents=True, exist_ok=True)
+    paths.chunks.write_text(json.dumps(raw_chunks), encoding="utf-8")
+
+    results = [
+        {
+            "chunk_id": "match-1-chunk-0",
+            "text": "Match summary",
+            "metadata": {
+                "document_id": "match-1-doc",
+                "level": "2",
+                "match_id": 1,
+            },
+            "source": "bm25",
+        }
+    ]
+
+    expanded = router._expand_query_entity_siblings(
+        "How did Team B play?",
+        results,
+        artifact_paths=paths,
+    )
+
+    assert [item["chunk_id"] for item in expanded] == [
+        "match-1-chunk-0",
+        "match-1-chunk-1",
+    ]
+
+def test_bm25_preserves_match_date_metadata(monkeypatch):
+    """BM25 candidates must preserve fixture date for downstream grounding."""
+    import numpy as np
+    import src.retrieval.bm25 as bm25_module
+    import src.retrieval.search as search
+
+    class _FakeBM25:
+        def get_scores(self, tokens):
+            return np.array([1.0])
+
+    monkeypatch.setattr(search, "_load_bm25_index", lambda path=None: _FakeBM25())
+    monkeypatch.setattr(
+        search,
+        "_load_chunks",
+        lambda path=None: [{
+            "chunk_id": "c-date",
+            "document_id": "L2-match-date",
+            "level": "2",
+            "text": "Goals and substitutions.",
+            "metadata": {
+                "home_team": "Arsenal",
+                "away_team": "Leicester City",
+                "match_date": "2016-02-14",
+            },
+        }],
+    )
+    monkeypatch.setattr(search, "_get_tokenizer", lambda: lambda text: text.lower().split())
+
+    result = bm25_module.bm25_search("goals", k=1)
+
+    assert result[0]["metadata"]["match_date"] == "2016-02-14"
+
+
+def test_vector_store_preserves_match_date_metadata(tmp_path, monkeypatch):
+    """Dense retrieval metadata must retain fixture date from raw chunks."""
+    from src.knowledge.indexing.vector_store import create_vector_store
+
+    monkeypatch.setattr("sentence_transformers.SentenceTransformer", _FakeEmbeddingModel)
+
+    collection = create_vector_store(
+        chunks=[{
+            "chunk_id": "c-date",
+            "document_id": "L2-match-date",
+            "level": "2",
+            "text": "Goals and substitutions.",
+            "search_text": "Goals and substitutions.",
+            "metadata": {
+                "home_team": "Arsenal",
+                "away_team": "Leicester City",
+                "match_date": "2016-02-14",
+            },
+        }],
+        persist_dir=tmp_path / "chroma",
+        collection_name="date_metadata_test",
+    )
+
+    stored = collection.get(ids=["c-date"], include=["metadatas"])
+    assert stored["metadatas"][0]["match_date"] == "2016-02-14"

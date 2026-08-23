@@ -388,3 +388,117 @@ def test_keeps_candidate_with_missing_entity_metadata_when_query_evidence_matche
     )
 
     assert chunks[0] in selected
+
+def test_selector_keeps_multiple_facets_from_same_document():
+    chunks = [
+        {
+            "chunk_id": "L2-match-chunk-3",
+            "text": "Goals high xG misses recorded in the match.",
+            "metadata": {"document_id": "L2-match-1", "level": "2"},
+            "rank": 1,
+        },
+        {
+            "chunk_id": "L2-match-chunk-5",
+            "text": "Six substitutions were recorded in the match.",
+            "metadata": {"document_id": "L2-match-1", "level": "2"},
+            "rank": 2,
+        },
+        {
+            "chunk_id": "other",
+            "text": "Unrelated match with goals.",
+            "metadata": {"document_id": "other-doc", "level": "2"},
+            "rank": 3,
+        },
+    ]
+
+    selected = select_relevant_chunks(
+        "How many goals substitutions and high xG misses were recorded?",
+        chunks,
+        max_chunks=2,
+    )
+
+    assert chunks[0] in selected
+    assert chunks[1] in selected
+
+def test_match_selection_prefers_exact_fixture_date_when_same_teams_play_twice():
+    """Same team pair can meet more than once; fixture date must disambiguate selection."""
+    wrong_fixture = {
+        "chunk_id": "L2-old-fixture",
+        "text": "Goals, substitutions, and high xG misses were recorded in the match.",
+        "metadata": {
+            "document_id": "L2-match-old",
+            "level": "2",
+            "home_team": "Leicester City",
+            "away_team": "Arsenal",
+            "match_date": "2015-09-26",
+        },
+        "rank": 1,
+        "source": "bm25",
+    }
+    correct_fixture = {
+        "chunk_id": "L2-correct-fixture",
+        "text": "Goals, substitutions, and high xG misses were recorded in the match.",
+        "metadata": {
+            "document_id": "L2-match-correct",
+            "level": "2",
+            "home_team": "Arsenal",
+            "away_team": "Leicester City",
+            "match_date": "2016-02-14",
+        },
+        "rank": 2,
+        "source": "bm25",
+    }
+
+    selected = select_relevant_chunks(
+        "In Arsenal's 2-1 win over Leicester City on 14 February 2016, "
+        "how many goals, substitutions, and high-xG misses were recorded?",
+        [wrong_fixture, correct_fixture],
+        max_chunks=1,
+    )
+
+    assert selected == [correct_fixture]
+
+def test_selector_prioritizes_exact_fixture_expansion_after_match_pair_boost():
+    match_boost = {
+        "chunk_id": "L1-target",
+        "text": "Manchester City beat Newcastle United 6-1.",
+        "metadata": {"document_id": "L1-match-10", "level": "1"},
+        "source": "match_pair_boost",
+    }
+    fixture_l2 = {
+        "chunk_id": "L2-target",
+        "text": "Goals substitutions and high xG misses were recorded in the match.",
+        "metadata": {"document_id": "L2-match-10", "level": "2"},
+        "source": "match_fixture_expansion",
+    }
+    fixture_l3 = {
+        "chunk_id": "L3-target",
+        "text": "Sergio Aguero scored five goals and produced the key player performance.",
+        "metadata": {
+            "document_id": "L3-match-10-player-1",
+            "level": "3",
+            "player_name": "Sergio Aguero",
+        },
+        "source": "match_fixture_expansion",
+    }
+    distractor = {
+        "chunk_id": "wrong",
+        "text": "Sergio Aguero scored goals in another Manchester City match.",
+        "metadata": {
+            "document_id": "L3-match-99-player-1",
+            "level": "3",
+            "player_name": "Sergio Aguero",
+        },
+        "source": "bm25",
+    }
+
+    selected = select_relevant_chunks(
+        "How did Manchester City win 6-1, and how did Sergio Aguero perform with goals?",
+        [match_boost, distractor, fixture_l2, fixture_l3],
+        max_chunks=3,
+    )
+
+    assert selected[0] is match_boost
+    assert fixture_l2 in selected
+    assert fixture_l3 in selected
+    assert distractor not in selected

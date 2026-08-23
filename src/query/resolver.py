@@ -397,7 +397,7 @@ def _resolve_player_name(name: str, data: dict) -> str | None:
         # Word-boundary match: query must match a complete word in the player name
         pname_words = pname_ascii.split()
         name_words = name_ascii.split()
-        if any(nw == pw for nw in name_words for pw in pname_words):
+        if name_words and all(nw in pname_words for nw in name_words):
             return pname
 
     # Original substring match

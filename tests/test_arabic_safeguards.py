@@ -751,3 +751,246 @@ def test_ensure_team_style_doc_bounded_under_many_distinct_entities(monkeypatch)
     # injected -- safe by the same "no match, no injection" construction
     # used throughout this module.
     assert result == []
+
+
+
+# ---------------------------------------------------------------------------
+# Match pair boosting regression
+# ---------------------------------------------------------------------------
+
+
+def test_match_pair_boost_resolves_exact_fixture():
+    """Exact match query must resolve the correct fixture, not another match
+    containing the same team name.
+    """
+    from src.artifacts import ArtifactPaths
+    from src.retrieval.search import hybrid_search
+
+    artifact_paths = ArtifactPaths(2, 27)
+
+    results = hybrid_search(
+        "In Sunderland's 2-2 draw with West Ham United on 3 October 2015, "
+        "how many goals were recorded?",
+        k=10,
+        artifact_paths=artifact_paths,
+    )
+
+    assert results
+    assert results[0]["chunk_id"] == "L1-match-3754076-chunk-0"
+    assert results[0]["source"] == "match_pair_boost"
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        (
+            "How did Chelsea's 2-2 draw with Tottenham unfold, and how did Harry Kane perform?",
+            ("Chelsea", "Tottenham"),
+        ),
+        (
+            "How did Manchester City's 6-1 win over Newcastle unfold, and how did Sergio Aguero perform?",
+            ("Manchester City", "Newcastle"),
+        ),
+        (
+            "How did Everton's 6-2 win over Sunderland unfold, and how did Arouna Kone perform?",
+            ("Everton", "Sunderland"),
+        ),
+        (
+            "How did Manchester United beat Arsenal 3-2, and how did Marcus Rashford perform?",
+            ("Manchester United", "Arsenal"),
+        ),
+    ],
+)
+def test_detect_match_teams_handles_multi_level_match_phrasings(query, expected):
+    from src.retrieval.safeguards import _detect_match_teams
+
+    assert _detect_match_teams(query) == expected
+
+@pytest.mark.parametrize(
+    ("query", "expected_document_id"),
+    [
+        (
+            "How did Chelsea's 2-2 draw with Tottenham unfold, and how did Harry Kane perform?",
+            "L1-match-3754092",
+        ),
+        (
+            "How did Manchester City's 6-1 win over Newcastle unfold, and how did Sergio Aguero perform?",
+            "L1-match-3754079",
+        ),
+        (
+            "How did Everton's 6-2 win over Sunderland unfold, and how did Arouna Kone perform?",
+            "L1-match-3754082",
+        ),
+        (
+            "How did Manchester United beat Arsenal 3-2, and how did Marcus Rashford perform?",
+            "L1-match-3754239",
+        ),
+    ],
+)
+def test_match_pair_boost_uses_canonical_teams_and_score(query, expected_document_id):
+    from src.artifacts import ArtifactPaths
+    from src.retrieval.safeguards import _boost_match_pair_candidates
+
+    results = _boost_match_pair_candidates(
+        query,
+        [],
+        artifact_paths=ArtifactPaths(2, 27),
+    )
+
+    assert results
+    assert (
+        results[0].get("metadata", {}).get("document_id")
+        or results[0].get("document_id")
+    ) == expected_document_id
+
+def test_exact_fixture_expansion_adds_same_match_l2_and_requested_player_l3(monkeypatch):
+    from src.retrieval import safeguards
+
+    chunks = [
+        {
+            "chunk_id": "L1-match-10-chunk-0",
+            "document_id": "L1-match-10",
+            "level": "1",
+            "match_id": 10,
+            "text": "Manchester City 6-1 Newcastle United.",
+            "metadata": {
+                "home_team": "Manchester City",
+                "away_team": "Newcastle United",
+            },
+        },
+        {
+            "chunk_id": "L2-match-10-chunk-0",
+            "document_id": "L2-match-10",
+            "level": "2",
+            "match_id": 10,
+            "text": "Match event summary.",
+            "metadata": {},
+        },
+        {
+            "chunk_id": "L3-match-10-player-1-chunk-0",
+            "document_id": "L3-match-10-player-1",
+            "level": "3",
+            "match_id": 10,
+            "player_name": "Sergio Leonel Ag\u00fcero del Castillo",
+            "text": "Sergio Aguero player-match summary.",
+            "metadata": {"player_name": "Sergio Leonel Ag\u00fcero del Castillo"},
+        },
+        {
+            "chunk_id": "L3-match-10-player-2-chunk-0",
+            "document_id": "L3-match-10-player-2",
+            "level": "3",
+            "match_id": 10,
+            "player_name": "David Josu\u00e9 Jim\u00e9nez Silva",
+            "text": "David Silva player-match summary.",
+            "metadata": {"player_name": "David Josu\u00e9 Jim\u00e9nez Silva"},
+        },
+    ]
+
+    monkeypatch.setattr(safeguards, "_get_chunks", lambda artifact_paths=None: chunks)
+
+    results = [
+        {
+            "chunk_id": "L1-match-10-chunk-0",
+            "document_id": "L1-match-10",
+            "text": "Manchester City 6-1 Newcastle United.",
+            "metadata": {
+                "document_id": "L1-match-10",
+                "level": "1",
+                "match_id": 10,
+            },
+            "source": "match_pair_boost",
+        }
+    ]
+
+    expanded = safeguards._expand_exact_fixture_candidates(
+        "How did Manchester City's 6-1 win over Newcastle unfold, and how did Sergio Aguero perform?",
+        results,
+    )
+
+    docs = {
+        item.get("metadata", {}).get("document_id") or item.get("document_id")
+        for item in expanded
+    }
+
+    assert "L2-match-10" in docs
+    assert "L3-match-10-player-1" in docs
+    assert "L3-match-10-player-2" not in docs
+
+def test_exact_fixture_expansion_promotes_existing_same_match_candidates(monkeypatch):
+    from src.retrieval import safeguards
+
+    chunks = [
+        {
+            "chunk_id": "L1-match-10-chunk-0",
+            "document_id": "L1-match-10",
+            "level": "1",
+            "match_id": 10,
+            "text": "Manchester City 6-1 Newcastle United.",
+            "metadata": {},
+        },
+        {
+            "chunk_id": "L2-match-10-chunk-0",
+            "document_id": "L2-match-10",
+            "level": "2",
+            "match_id": 10,
+            "text": "Match event summary.",
+            "metadata": {},
+        },
+        {
+            "chunk_id": "L3-match-10-player-1-chunk-0",
+            "document_id": "L3-match-10-player-1",
+            "level": "3",
+            "match_id": 10,
+            "player_name": "Sergio Leonel Ag\u00fcero del Castillo",
+            "text": "Sergio Aguero player-match summary.",
+            "metadata": {"player_name": "Sergio Leonel Ag\u00fcero del Castillo"},
+        },
+    ]
+
+    monkeypatch.setattr(safeguards, "_get_chunks", lambda artifact_paths=None: chunks)
+
+    results = [
+        {
+            "chunk_id": "L1-match-10-chunk-0",
+            "document_id": "L1-match-10",
+            "metadata": {"document_id": "L1-match-10", "level": "1", "match_id": 10},
+            "source": "match_pair_boost",
+        },
+        {
+            "chunk_id": "L2-match-10-chunk-0",
+            "document_id": "L2-match-10",
+            "metadata": {"document_id": "L2-match-10", "level": "2", "match_id": 10},
+            "source": "bm25",
+        },
+        {
+            "chunk_id": "L3-match-10-player-1-chunk-0",
+            "document_id": "L3-match-10-player-1",
+            "metadata": {
+                "document_id": "L3-match-10-player-1",
+                "level": "3",
+                "match_id": 10,
+                "player_name": "Sergio Leonel Ag\u00fcero del Castillo",
+            },
+            "source": "dense",
+        },
+    ]
+
+    expanded = safeguards._expand_exact_fixture_candidates(
+        "How did Manchester City's 6-1 win over Newcastle unfold, and how did Sergio Aguero perform?",
+        results,
+    )
+
+    by_doc = {
+        item.get("metadata", {}).get("document_id") or item.get("document_id"): item
+        for item in expanded
+    }
+
+    assert by_doc["L1-match-10"]["source"] == "match_pair_boost"
+    assert by_doc["L2-match-10"]["source"] == "match_fixture_expansion"
+    assert by_doc["L3-match-10-player-1"]["source"] == "match_fixture_expansion"
+
+def test_detect_match_teams_handles_match_between_phrasing():
+    from src.retrieval.safeguards import _detect_match_teams
+
+    assert _detect_match_teams(
+        "Describe the match between England and Iran."
+    ) == ("England", "Iran")

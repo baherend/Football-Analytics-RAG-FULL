@@ -64,6 +64,9 @@ def bm25_search(query: str, k: int = 20, artifact_paths: ArtifactPaths | None = 
                     "match_id": chunk.get("match_id"),
                     "player_name": chunk.get("player_name"),
                     "team_name": chunk.get("team_name"),
+                    "home_team": chunk.get("metadata", {}).get("home_team"),
+                    "away_team": chunk.get("metadata", {}).get("away_team"),
+                    "match_date": chunk.get("metadata", {}).get("match_date") or chunk.get("match_date"),
                 },
                 "score": float(scores[idx]),
                 "rank": rank + 1,  # 1-indexed rank

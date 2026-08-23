@@ -383,6 +383,183 @@ def _detect_match_query(query: str) -> tuple[str | None, str | None]:
     return None, stage
 
 
+
+def _detect_match_teams(query: str) -> tuple[str | None, str | None]:
+    """Detect two teams mentioned in a head-to-head match query."""
+    query_lower = query.lower().strip()
+    query_lower = re.sub(r"^in\s+", "", query_lower)
+
+    patterns = [
+        # Possessive result phrasing:
+        # "Chelsea's 2-2 draw with Tottenham"
+        # "Manchester City's 6-1 win over Newcastle"
+        # "Everton's 2-3 loss to West Ham United"
+        r"(?:how\s+did\s+)?([a-z][a-z .'-]+?)(?:'s|s')\s+"
+        r"\d+\s*[-\u2013]\s*\d+\s+"
+        r"(?:draw\s+with|win\s+over|loss\s+to|lost\s+to|defeat\s+to)\s+"
+        r"([a-z][a-z .'-]+?)"
+        r"(?=\s+(?:on|in|during|unfold|match|game|\d)|\s*,|\?|$)",
+
+        # Verb-first result phrasing:
+        # "Manchester United beat Arsenal 3-2"
+        r"(?:how\s+did\s+)?([a-z][a-z .'-]+?)\s+beat\s+"
+        r"([a-z][a-z .'-]+?)\s+\d+\s*[-\u2013]\s*\d+"
+        r"(?=\s*(?:,|\?|$)|\s+(?:on|in|during|unfold))",
+
+        # Explicit "match between X and Y" phrasing.
+        r"(?:the\s+)?match\s+between\s+"
+        r"([a-z][a-z .'-]+?)\s+and\s+"
+        r"([a-z][a-z .'-]+?)"
+        r"(?=\s+(?:on|in|during)|[?.!,]|$)",
+
+        # Generic head-to-head phrasing retained for compatibility.
+        r"([a-z][a-z .'-]+?)\s+(?:vs\.?|versus|and|with)\s+"
+        r"([a-z][a-z .'-]+?)"
+        r"(?=\s+(?:on|in|during|match|game|draw|win|lost|\d)|\?|$)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, query_lower)
+        if match:
+            first = match.group(1).strip(" ,.?").title()
+            second = match.group(2).strip(" ,.?").title()
+
+            for suffix in (" Draw", " Win", " Lost", " Loss"):
+                if first.endswith(suffix):
+                    first = first[:-len(suffix)].strip()
+
+            if first.casefold() in {"draw", "win", "lost", "loss"}:
+                continue
+
+            if len(first) > 2 and len(second) > 2:
+                return first, second
+
+    return None, None
+
+
+
+def _boost_match_pair_candidates(
+    query: str,
+    results: list[dict],
+    artifact_paths: ArtifactPaths | None = None,
+) -> list[dict]:
+    """Promote the exact L1 fixture identified by teams and score."""
+
+    first_team, second_team = _detect_match_teams(query)
+
+    if not first_team or not second_team:
+        return results
+
+    # Reuse the structured-query team's canonical name resolver so aliases /
+    # partial names such as "Tottenham" -> "Tottenham Hotspur" are resolved
+    # against the active competition dataset, never a different namespace.
+    from src.query.resolver import DATA_PATH, _load_data, _resolve_team_name
+
+    data_path = artifact_paths.match_facts if artifact_paths is not None else DATA_PATH
+    try:
+        data = _load_data(data_path)
+        first_team = _resolve_team_name(first_team, data) or first_team
+        second_team = _resolve_team_name(second_team, data) or second_team
+    except (FileNotFoundError, KeyError, OSError):
+        # Retrieval must retain its previous best-effort behaviour if the
+        # structured artifact is unavailable.
+        pass
+
+    first_cf = first_team.casefold()
+    second_cf = second_team.casefold()
+
+    score_match = re.search(r"\b(\d+)\s*[-\u2013]\s*(\d+)\b", query)
+    query_score = (
+        (int(score_match.group(1)), int(score_match.group(2)))
+        if score_match
+        else None
+    )
+
+    chunks = _get_chunks(artifact_paths)
+    matching_fixtures: dict[object, dict] = {}
+
+    for chunk in chunks:
+        if chunk.get("level") != "1":
+            continue
+
+        metadata = chunk.get("metadata", {})
+        if not isinstance(metadata, dict):
+            continue
+
+        home = str(metadata.get("home_team", "")).casefold()
+        away = str(metadata.get("away_team", "")).casefold()
+
+        same_orientation = home == first_cf and away == second_cf
+        reverse_orientation = home == second_cf and away == first_cf
+
+        if not (same_orientation or reverse_orientation):
+            continue
+
+        if query_score is not None:
+            first_score, second_score = query_score
+            home_score = metadata.get("home_score")
+            away_score = metadata.get("away_score")
+
+            if same_orientation:
+                score_matches = (
+                    home_score == first_score
+                    and away_score == second_score
+                )
+            else:
+                score_matches = (
+                    home_score == second_score
+                    and away_score == first_score
+                )
+
+            if not score_matches:
+                continue
+
+        fixture_key = (
+            chunk.get("match_id")
+            or metadata.get("match_id")
+            or chunk.get("document_id")
+            or metadata.get("document_id")
+        )
+        if fixture_key is not None:
+            matching_fixtures.setdefault(fixture_key, chunk)
+
+    # Multiple chunks from one L1 document are one fixture, not ambiguity.
+    # Only refuse the boost when genuinely different matches still satisfy
+    # the available team/score evidence.
+    if len(matching_fixtures) != 1:
+        return results
+
+    chunk = next(iter(matching_fixtures.values()))
+
+    results = [
+        item
+        for item in results
+        if item.get("chunk_id") != chunk.get("chunk_id")
+    ]
+
+    results.insert(
+        0,
+        {
+            "chunk_id": chunk.get("chunk_id"),
+            "document_id": chunk.get("document_id"),
+            "text": chunk.get("text", ""),
+            "metadata": {
+                **chunk.get("metadata", {}),
+                "document_id": chunk.get("document_id")
+                or chunk.get("metadata", {}).get("document_id"),
+                "level": chunk.get("level")
+                or chunk.get("metadata", {}).get("level"),
+                "match_id": chunk.get("match_id")
+                or chunk.get("metadata", {}).get("match_id"),
+            },
+            "score": 0.0,
+            "rrf_score": 0.0,
+            "source": "match_pair_boost",
+        },
+    )
+
+    return results
+
 def _ensure_match_summary(
     query: str,
     results: list[dict],
@@ -525,6 +702,196 @@ def _ensure_match_summary(
     return results
 
 
+
+def _expand_exact_fixture_candidates(
+    query: str,
+    results: list[dict],
+    artifact_paths: ArtifactPaths | None = None,
+) -> list[dict]:
+    """Expand a trusted exact-fixture boost across answer-bearing levels.
+
+    Only a unique ``match_pair_boost`` is trusted as the fixture identity.
+    Level 1/2 chunks from that match may be added directly. Level 3 is added
+    only for the player explicitly requested by a ``how did X perform``
+    clause, resolved against players from that same match.
+    """
+    boosted_match_ids: set[str] = set()
+
+    for result in results:
+        if result.get("source") != "match_pair_boost":
+            continue
+
+        metadata = result.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        match_id = result.get("match_id") or metadata.get("match_id")
+        if match_id is not None:
+            boosted_match_ids.add(str(match_id))
+
+    if len(boosted_match_ids) != 1:
+        return results
+
+    target_match_id = next(iter(boosted_match_ids))
+    raw_chunks = _get_chunks(artifact_paths)
+
+    same_match_chunks = []
+    for chunk in raw_chunks:
+        metadata = chunk.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        match_id = chunk.get("match_id") or metadata.get("match_id")
+        if match_id is not None and str(match_id) == target_match_id:
+            same_match_chunks.append(chunk)
+
+    if not same_match_chunks:
+        return results
+
+    requested_player = None
+    player_match = re.search(
+        r"\bhow\s+did\s+((?:(?!\bhow\s+did\b).)+?)\s+perform\b",
+        query,
+        flags=re.IGNORECASE,
+    )
+    if player_match:
+        requested_player = player_match.group(1).strip(" ,.?")
+
+    resolved_player = None
+    if requested_player:
+        player_names = []
+        seen_player_names = set()
+
+        for chunk in same_match_chunks:
+            metadata = chunk.get("metadata", {})
+            if not isinstance(metadata, dict):
+                metadata = {}
+
+            level = str(chunk.get("level") or metadata.get("level") or "")
+            if level != "3":
+                continue
+
+            player_name = (
+                chunk.get("player_name")
+                or metadata.get("player_name")
+            )
+            if player_name and player_name not in seen_player_names:
+                seen_player_names.add(player_name)
+                player_names.append(player_name)
+
+        if player_names:
+            from src.query.resolver import _resolve_player_name
+
+            local_data = {
+                "player_match_facts": [
+                    {"player_name": name}
+                    for name in player_names
+                ]
+            }
+            resolved_player = _resolve_player_name(
+                requested_player,
+                local_data,
+            )
+
+    eligible_chunk_ids: set[str] = set()
+
+    for raw_chunk in same_match_chunks:
+        raw_metadata = raw_chunk.get("metadata", {})
+        if not isinstance(raw_metadata, dict):
+            raw_metadata = {}
+
+        level = str(
+            raw_chunk.get("level")
+            or raw_metadata.get("level")
+            or ""
+        )
+
+        if level not in {"1", "2", "3"}:
+            continue
+
+        if level == "3":
+            player_name = (
+                raw_chunk.get("player_name")
+                or raw_metadata.get("player_name")
+            )
+            if not resolved_player or player_name != resolved_player:
+                continue
+
+        chunk_id = raw_chunk.get("chunk_id")
+        if chunk_id:
+            eligible_chunk_ids.add(chunk_id)
+
+    expanded = []
+    for item in results:
+        promoted = dict(item)
+        if (
+            promoted.get("chunk_id") in eligible_chunk_ids
+            and promoted.get("source") != "match_pair_boost"
+        ):
+            promoted["source"] = "match_fixture_expansion"
+        expanded.append(promoted)
+
+    seen_chunk_ids = {item.get("chunk_id") for item in expanded}
+
+    for raw_chunk in same_match_chunks:
+        raw_metadata = raw_chunk.get("metadata", {})
+        if not isinstance(raw_metadata, dict):
+            raw_metadata = {}
+
+        level = str(
+            raw_chunk.get("level")
+            or raw_metadata.get("level")
+            or ""
+        )
+
+        if level not in {"1", "2", "3"}:
+            continue
+
+        if level == "3":
+            player_name = (
+                raw_chunk.get("player_name")
+                or raw_metadata.get("player_name")
+            )
+            if not resolved_player or player_name != resolved_player:
+                continue
+
+        chunk_id = raw_chunk.get("chunk_id")
+        if chunk_id in seen_chunk_ids:
+            continue
+
+        document_id = (
+            raw_chunk.get("document_id")
+            or raw_metadata.get("document_id")
+        )
+
+        metadata = dict(raw_metadata)
+        metadata.setdefault("document_id", document_id)
+
+        for field in (
+            "level",
+            "match_id",
+            "player_name",
+            "team_name",
+            "home_team",
+            "away_team",
+            "match_date",
+        ):
+            if metadata.get(field) is None and raw_chunk.get(field) is not None:
+                metadata[field] = raw_chunk.get(field)
+
+        expanded.append({
+            "chunk_id": chunk_id,
+            "document_id": document_id,
+            "text": raw_chunk.get("text", ""),
+            "metadata": metadata,
+            "score": 0.0,
+            "rrf_score": 0.0,
+            "source": "match_fixture_expansion",
+        })
+        seen_chunk_ids.add(chunk_id)
+
+    return expanded
+
 def _expand_query_entity_siblings(
     query: str, results: list[dict], artifact_paths: ArtifactPaths | None = None,
 ) -> list[dict]:
@@ -539,13 +906,28 @@ def _expand_query_entity_siblings(
     entity_fields = ("team_name", "player_name", "home_team", "away_team")
     target_document_ids: set[str] = set()
 
+    raw_chunks = _get_chunks(artifact_paths)
+    raw_chunks_by_id = {
+        chunk.get("chunk_id"): chunk
+        for chunk in raw_chunks
+        if chunk.get("chunk_id")
+    }
+
     for result in results:
         metadata = result.get("metadata", {})
         if not isinstance(metadata, dict):
             metadata = {}
 
+        raw_chunk = raw_chunks_by_id.get(result.get("chunk_id"), {})
+        raw_metadata = raw_chunk.get("metadata", {})
+        if not isinstance(raw_metadata, dict):
+            raw_metadata = {}
+
         entity_values = [
-            metadata.get(field) or result.get(field)
+            metadata.get(field)
+            or result.get(field)
+            or raw_metadata.get(field)
+            or raw_chunk.get(field)
             for field in entity_fields
         ]
         entity_matches = any(
@@ -555,7 +937,12 @@ def _expand_query_entity_siblings(
         )
 
         if entity_matches:
-            document_id = result.get("document_id") or metadata.get("document_id")
+            document_id = (
+                result.get("document_id")
+                or metadata.get("document_id")
+                or raw_chunk.get("document_id")
+                or raw_metadata.get("document_id")
+            )
             if document_id:
                 target_document_ids.add(str(document_id))
 
@@ -565,7 +952,7 @@ def _expand_query_entity_siblings(
     expanded = list(results)
     seen_chunk_ids = {item.get("chunk_id") for item in expanded}
 
-    for raw_chunk in _get_chunks(artifact_paths):
+    for raw_chunk in raw_chunks:
         raw_metadata = raw_chunk.get("metadata", {})
         if not isinstance(raw_metadata, dict):
             raw_metadata = {}

@@ -86,6 +86,8 @@ from src.retrieval.safeguards import (
     _ensure_comparison_entities,
     _ensure_match_summary,
     _ensure_team_style_doc,
+    _boost_match_pair_candidates,
+    _expand_exact_fixture_candidates,
     _expand_query_entity_siblings,
     _find_l4_document,
 )
@@ -259,6 +261,20 @@ def hybrid_search(
         artifact_paths=artifact_paths,
     )
 
+    # Step 8b: Prefer exact match pair documents before context selection
+    candidates = _boost_match_pair_candidates(
+        query,
+        candidates,
+        artifact_paths=artifact_paths,
+    )
+
+    # Step 8c: Expand a uniquely resolved fixture across answer-bearing levels.
+    candidates = _expand_exact_fixture_candidates(
+        query,
+        candidates,
+        artifact_paths=artifact_paths,
+    )
+
     # Step 9: Select chunks with answer-bearing query-facet coverage
     selected = select_relevant_chunks(query, candidates, max_chunks=k)
 
@@ -321,7 +337,14 @@ def hybrid_candidates(
     reranked = _ensure_match_summary(query, reranked, k, artifact_paths=artifact_paths)
 
     # Step 8: Expand siblings for query-matched entity documents
-    return _expand_query_entity_siblings(query, reranked, artifact_paths=artifact_paths)
+    reranked = _expand_query_entity_siblings(
+        query,
+        reranked,
+        artifact_paths=artifact_paths,
+    )
+
+    # Step 8: Return retrieval candidates before context selection
+    return reranked
 
 
 # ---------------------------------------------------------------------------

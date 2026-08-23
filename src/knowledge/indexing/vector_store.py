@@ -82,6 +82,16 @@ def create_vector_store(chunks: list[dict] | None = None,
             meta["player_name"] = c["player_name"]
         if c.get("team_name"):
             meta["team_name"] = c["team_name"]
+        chunk_metadata = c.get("metadata", {})
+        if isinstance(chunk_metadata, dict):
+            if chunk_metadata.get("home_team"):
+                meta["home_team"] = chunk_metadata["home_team"]
+            if chunk_metadata.get("away_team"):
+                meta["away_team"] = chunk_metadata["away_team"]
+            if chunk_metadata.get("match_date"):
+                meta["match_date"] = chunk_metadata["match_date"]
+        if c.get("match_date") and "match_date" not in meta:
+            meta["match_date"] = c["match_date"]
         metadatas.append(meta)
 
     print(f"Generating embeddings for {len(texts)} chunks...")

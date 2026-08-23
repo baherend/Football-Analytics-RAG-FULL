@@ -760,3 +760,19 @@ def test_superlative_derived_ratio_ranks_by_combined_components():
     assert result.status == "resolved"
     assert result.data[0]["player_name"] == "Player B"
     assert result.aggregated_value == 60.0
+
+
+def test_player_name_resolution_requires_all_supplied_name_words():
+    """A multi-word partial name must not resolve from one shared first name."""
+    from src.query.resolver import _resolve_player_name
+
+    data = {
+        "player_match_facts": [
+            {"player_name": "Sergio Germ\u00e1n Romero"},
+            {"player_name": "Sergio Leonel Ag\u00fcero del Castillo"},
+            {"player_name": "Arouna Kon\u00e9"},
+        ]
+    }
+
+    assert _resolve_player_name("Sergio Aguero", data) == "Sergio Leonel Ag\u00fcero del Castillo"
+    assert _resolve_player_name("Arouna Kone", data) == "Arouna Kon\u00e9"
