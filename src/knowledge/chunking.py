@@ -22,6 +22,28 @@ CHUNK_OVERLAP = 50     # characters
 SENTENCE_END = re.compile(r'(?<=[.!?])\s+')
 
 
+def _build_search_text(doc: dict, chunk_text: str) -> str:
+    """Build retrieval-facing text without changing evidence text."""
+
+    parts = [chunk_text]
+
+    enrichment = (
+        doc.get("metadata", {})
+        .get("retrieval_enrichment", {})
+    )
+
+    match = enrichment.get("match", {})
+    patterns = match.get("search_patterns", {})
+
+    for category in ("score", "result", "matchup"):
+        values = patterns.get(category, [])
+        if values:
+            parts.extend(values)
+
+    return " ".join(parts)
+
+
+
 def split_sentences(text: str) -> list[str]:
     """Split text into sentences."""
     return [s.strip() for s in SENTENCE_END.split(text) if s.strip()]
@@ -44,7 +66,7 @@ def _make_chunk(doc: dict, chunk_idx: int, chunk_text: str) -> dict:
         "player_name": doc.get("player_name"),
         "team_name": doc.get("team_name"),
         "text": chunk_text,
-        "search_text": chunk_text,
+        "search_text": _build_search_text(doc, chunk_text),
         "metadata": doc.get("metadata", {}),
     }
 

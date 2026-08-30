@@ -25,6 +25,7 @@ from collections import Counter
 from src.artifacts import resolve_output_dir
 from src.extraction.match_facts import COMPETITION_ID, SEASON_ID
 from src.rendering.render import render_all, persist
+from src.knowledge.enrichment.retrieval_enrichment import enrich_documents
 
 
 def main() -> int:
@@ -51,6 +52,7 @@ def main() -> int:
 
     print(f"Rendering documents...")
     documents = render_all(facts)
+    documents = enrich_documents(documents)
 
     counts = Counter(d.level for d in documents)
     print(f"\nDocument counts by level")
