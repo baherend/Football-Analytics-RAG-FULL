@@ -151,10 +151,14 @@ with st.sidebar:
     # instead of being hardcoded here, where it could drift from the registry
     # unnoticed. Same IDs, same order as before -- this deployment is Groq-only
     # (it reads GROQ_API_KEY/GROQ_MODEL from st.secrets above).
+    model_options = list(rag.GROQ_DIRECT_MODELS)
+    if rag.GROQ_MODEL not in model_options:
+        model_options.insert(0, rag.GROQ_MODEL)
+
     model = st.selectbox(
         "LLM Model",
-        list(rag.GROQ_DIRECT_MODELS),
-        index=0,
+        model_options,
+        index=model_options.index(rag.GROQ_MODEL),
     )
     k = st.slider("Sources to retrieve", 1, 5, 3)
 
