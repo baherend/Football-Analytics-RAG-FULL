@@ -26,9 +26,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.evaluation.retrieval_evaluator import (
     DEFAULT_CANDIDATE_CHUNK_DEPTH,
@@ -53,11 +54,14 @@ from src.evaluation.diagnostics import (
     TempModelIndex,
     build_case_lookup,
     evaluate_model_dense_method,
+    evaluate_model_hybrid_method,
     evaluate_raw_rrf_method,
     make_translated_case,
 )
+from src.artifacts import ArtifactPaths
+from src.evaluation.ground_truth.registry import resolve_ground_truth_bundle
 
-PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
 
 
 def _write(out_dir: Path, name: str, data) -> Path:
@@ -296,45 +300,110 @@ def run_language_entity_phase(out_dir: Path, variant_cases: dict, k_values=DEFAU
 
 
 def run_model_phase(out_dir: Path, model_names, k_values=DEFAULT_K_VALUES,
-                     candidate_chunk_depth=DEFAULT_CANDIDATE_CHUNK_DEPTH):
+                     candidate_chunk_depth=DEFAULT_CANDIDATE_CHUNK_DEPTH,
+                     competition_id=43, season_id=106, artifact_output_root=None):
     import json as _json
-    chunks_path = Path(PROJECT_ROOT) / "output" / "chunks.json"
+    is_legacy_wc2022 = (competition_id, season_id) == (43, 106) and artifact_output_root is None
+    if is_legacy_wc2022:
+        artifact_paths = None
+        chunks_path = Path(PROJECT_ROOT) / "output" / "chunks.json"
+    else:
+        output_root = (
+            Path(artifact_output_root)
+            if artifact_output_root is not None
+            else Path(PROJECT_ROOT) / "output"
+        )
+        artifact_paths = ArtifactPaths(competition_id, season_id, output_root=output_root)
+        chunks_path = artifact_paths.chunks
+
+    ground_truth = resolve_ground_truth_bundle(competition_id, season_id)
     with open(chunks_path, encoding="utf-8") as f:
         chunks = _json.load(f)
 
     _, _, document_levels = validate_ground_truth_and_chunks(
-        chunks_path=str(chunks_path), ground_truth=None,
+        chunks_path=str(chunks_path), ground_truth=ground_truth,
     )
+
+    if (competition_id, season_id) == (43, 106):
+        query_sets = {language: build_translated_cases(language) for language in LANGUAGES}
+    else:
+        # No multilingual EPL benchmark is registered. Reuse only the
+        # competition's actual English Ground Truth; never manufacture
+        # translated relevance judgments.
+        query_sets = {"en": ground_truth.cases}
 
     results = {}
     for model_name in model_names:
         print(f"\n=== embedding model: {model_name} ===", flush=True)
-        model_results = {}
-        with TempModelIndex(chunks, model_name) as idx:
-            for language in LANGUAGES:
+        collection_name = (
+            f"diagnostic_{competition_id}_{season_id}_"
+            f"{model_name.replace('/', '_').replace('-', '_')}"
+        )
+        model_results = {
+            "dataset": {"competition_id": competition_id, "season_id": season_id},
+            "query_sets": {},
+        }
+        with TempModelIndex(chunks, model_name, collection_name=collection_name) as idx:
+            for language, cases in query_sets.items():
                 print(f"  language={language}", flush=True)
-                cases = build_translated_cases(language)
+                started = time.perf_counter()
                 case_results = evaluate_model_dense_method(
                     idx, cases, document_levels, k_values, candidate_chunk_depth,
                 )
-                model_results[language] = {
-                    "overall": aggregate_case_results(case_results, k_values),
-                    "by_group": aggregate_by_group(case_results, k_values),
-                    "cases": case_results,
+                dense_seconds = round(time.perf_counter() - started, 6)
+
+                started = time.perf_counter()
+                hybrid_results = evaluate_model_hybrid_method(
+                    idx, cases, document_levels, k_values, candidate_chunk_depth,
+                    artifact_paths=artifact_paths,
+                )
+                hybrid_seconds = round(time.perf_counter() - started, 6)
+
+                model_results["query_sets"][language] = {
+                    "dense": {
+                        "overall": aggregate_case_results(case_results, k_values),
+                        "by_group": aggregate_by_group(case_results, k_values),
+                        "evaluation_seconds": dense_seconds,
+                        "cases": case_results,
+                    },
+                    "hybrid": {
+                        "overall": aggregate_case_results(hybrid_results, k_values),
+                        "by_group": aggregate_by_group(hybrid_results, k_values),
+                        "evaluation_seconds": hybrid_seconds,
+                        "cases": hybrid_results,
+                    },
                 }
 
-            # Entity-script diagnostic for this model too.
-            entity_results = []
-            for v in ENTITY_SCRIPT_DIAGNOSTIC_VARIANTS:
-                case = make_translated_case(v.source_case_id, v.query)
-                r = evaluate_model_dense_method(idx, [case], document_levels, k_values, candidate_chunk_depth)[0]
-                entity_results.append({"case_id": v.source_case_id, "query": v.query, "result": r})
-            model_results["entity_script_diagnostic"] = entity_results
+            if (competition_id, season_id) == (43, 106):
+                entity_results = []
+                for v in ENTITY_SCRIPT_DIAGNOSTIC_VARIANTS:
+                    case = make_translated_case(v.source_case_id, v.query)
+                    dense_result = evaluate_model_dense_method(
+                        idx, [case], document_levels, k_values, candidate_chunk_depth,
+                    )[0]
+                    hybrid_result = evaluate_model_hybrid_method(
+                        idx, [case], document_levels, k_values, candidate_chunk_depth,
+                        artifact_paths=artifact_paths,
+                    )[0]
+                    entity_results.append({
+                        "case_id": v.source_case_id,
+                        "query": v.query,
+                        "dense_result": dense_result,
+                        "hybrid_result": hybrid_result,
+                    })
+                model_results["entity_script_diagnostic"] = entity_results
+
+            model_results["index"] = idx.operational_metadata()
 
         results[model_name] = model_results
-        _write(out_dir, f"phase6_model_{model_name.replace('/', '_')}.json", model_results)
+        dataset_suffix = f"{competition_id}_{season_id}"
+        _write(
+            out_dir,
+            f"phase6_model_{dataset_suffix}_{model_name.replace('/', '_')}.json",
+            model_results,
+        )
 
-    _write(out_dir, "phase6_models_combined.json", results)
+    _write(out_dir, f"phase6_models_combined_{competition_id}_{season_id}.json", results)
     return results
 
 
@@ -344,6 +413,12 @@ def main() -> int:
                          choices=["baseline", "ablation", "entity", "language-entity", "models", "all"])
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--models", nargs="*", default=["BAAI/bge-m3"])
+    parser.add_argument("--competition-id", type=int, default=43)
+    parser.add_argument("--season-id", type=int, default=106)
+    parser.add_argument(
+        "--artifact-output-root",
+        help="Optional output root containing competitions/<id>/<season> artifacts",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -359,7 +434,13 @@ def main() -> int:
         from src.evaluation.run_phase4_phase5 import PHASE5_VARIANTS
         run_language_entity_phase(out_dir, variant_cases=PHASE5_VARIANTS)
     if args.phase in ("models", "all"):
-        run_model_phase(out_dir, args.models)
+        run_model_phase(
+            out_dir,
+            args.models,
+            competition_id=args.competition_id,
+            season_id=args.season_id,
+            artifact_output_root=args.artifact_output_root,
+        )
 
     return 0
 

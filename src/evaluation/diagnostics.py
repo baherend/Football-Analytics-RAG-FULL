@@ -27,8 +27,11 @@ production paths):
 
 from __future__ import annotations
 
+import gc
+import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
@@ -179,14 +182,21 @@ class TempModelIndex:
         self._tmp_dir: Optional[str] = None
         self.model = None
         self.collection = None
+        self.embedding_dimension: Optional[int] = None
+        self.parameter_count: Optional[int] = None
+        self.build_seconds: Optional[float] = None
+        self.index_size_bytes: Optional[int] = None
 
     def __enter__(self) -> "TempModelIndex":
         import chromadb
         from sentence_transformers import SentenceTransformer
 
+        started = time.perf_counter()
         self._tmp_dir = tempfile.mkdtemp(prefix="ml_diag_chroma_")
         print(f"  Loading candidate model: {self.model_name}", flush=True)
         self.model = SentenceTransformer(self.model_name)
+        self.embedding_dimension = int(self.model.get_sentence_embedding_dimension())
+        self.parameter_count = sum(parameter.numel() for parameter in self.model.parameters())
 
         client = chromadb.PersistentClient(path=self._tmp_dir)
         self.collection = client.create_collection(name=self.collection_name)
@@ -216,7 +226,26 @@ class TempModelIndex:
                 documents=texts[i:end],
                 metadatas=metadatas[i:end],
             )
+        self.build_seconds = round(time.perf_counter() - started, 6)
+        self.index_size_bytes = sum(
+            path.stat().st_size
+            for path in Path(self._tmp_dir).rglob("*")
+            if path.is_file()
+        )
         return self
+
+    def operational_metadata(self) -> Dict[str, Any]:
+        """Return measured facts about this isolated model/index build."""
+        return {
+            "model_name": self.model_name,
+            "embedding_dimension": self.embedding_dimension,
+            "parameter_count": self.parameter_count,
+            "collection_identifier": self.collection_name,
+            "indexed_chunks": len(self.chunks),
+            "build_seconds": self.build_seconds,
+            "index_size_bytes": self.index_size_bytes,
+            "temporary_index": True,
+        }
 
     def dense_search(self, query: str, k: int = 20, level_filter: Optional[str] = None,
                       artifact_paths: Any = None) -> List[Dict[str, Any]]:
@@ -242,10 +271,42 @@ class TempModelIndex:
         return formatted
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        del self.model
-        del self.collection
-        if self._tmp_dir is not None:
-            shutil.rmtree(self._tmp_dir, ignore_errors=True)
+        self.model = None
+        self.collection = None
+        if self._tmp_dir is None:
+            return
+
+        # Chroma retains a shared PersistentClient system after local
+        # references are dropped. Stop only the system bound to this exact
+        # diagnostic path so Windows releases its segment-file handles.
+        try:
+            from chromadb.api.client import SharedSystemClient
+
+            tmp_resolved = Path(self._tmp_dir).resolve()
+            for identifier, system in list(
+                SharedSystemClient._identifier_to_system.items()
+            ):
+                try:
+                    matches_tmp = Path(identifier).resolve() == tmp_resolved
+                except (OSError, TypeError, ValueError):
+                    matches_tmp = False
+                if matches_tmp:
+                    system.stop()
+                    SharedSystemClient._identifier_to_system.pop(identifier, None)
+                    SharedSystemClient._identifier_to_refcount.pop(identifier, None)
+        except Exception:
+            pass
+        gc.collect()
+
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
+        if os.path.exists(self._tmp_dir):
+            import stat
+
+            def _remove_readonly(func, path, exc):
+                os.chmod(path, stat.S_IWRITE)
+                func(path)
+
+            shutil.rmtree(self._tmp_dir, onerror=_remove_readonly)
 
 
 def evaluate_model_dense_method(
@@ -268,4 +329,52 @@ def evaluate_model_dense_method(
             artifact_paths=None,
         )
         results.append(case_result)
+    return results
+
+
+def evaluate_model_hybrid_method(
+    model_index: "TempModelIndex",
+    cases: List[Dict[str, Any]],
+    document_levels: Dict[str, str],
+    k_values: Sequence[int] = DEFAULT_K_VALUES,
+    candidate_chunk_depth: int = DEFAULT_CANDIDATE_CHUNK_DEPTH,
+    artifact_paths: Any = None,
+) -> List[Dict[str, Any]]:
+    """Evaluate production Hybrid with only its Dense source replaced.
+
+    ``hybrid_search`` deliberately resolves ``dense_search`` through its
+    defining module so test/diagnostic monkeypatches are observed. This helper
+    uses that existing seam for one call at a time and restores the production
+    function in ``finally``. BM25, RRF, safeguards, selection, evaluator
+    semantics, and dataset artifact paths remain unchanged.
+    """
+    from src.retrieval import search as retrieval_module
+
+    production_dense_search = retrieval_module.dense_search
+
+    def candidate_model_hybrid_search(*args, **kwargs):
+        previous_dense_search = retrieval_module.dense_search
+        retrieval_module.dense_search = model_index.dense_search
+        try:
+            return retrieval_module.hybrid_search(*args, **kwargs)
+        finally:
+            retrieval_module.dense_search = previous_dense_search
+
+    results = []
+    try:
+        for case in cases:
+            results.append(
+                evaluate_case(
+                    case=case,
+                    retrieval_fn=candidate_model_hybrid_search,
+                    method="hybrid",
+                    document_levels=document_levels,
+                    k_values=k_values,
+                    candidate_chunk_depth=candidate_chunk_depth,
+                    artifact_paths=artifact_paths,
+                )
+            )
+    finally:
+        retrieval_module.dense_search = production_dense_search
+        reset_retrieval_caches(retrieval_module)
     return results
