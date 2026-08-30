@@ -26,6 +26,7 @@ behavior (there is none), and error handling are untouched.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -79,6 +80,14 @@ GROQ_DIRECT_MODELS: tuple[str, ...] = (
     "gemma2-9b-it",
     "mixtral-8x7b-32768",
 )
+
+
+_REASONING_BLOCK = re.compile(r"\\?<think(?:\s[^>]*)?>.*?(?:\\?</think>|$)", re.IGNORECASE | re.DOTALL)
+
+
+def _remove_reasoning_blocks(content: str) -> str:
+    """Remove provider reasoning blocks before returning a user-facing answer."""
+    return _REASONING_BLOCK.sub("", content).strip()
 
 
 def resolve_model(model: str | None) -> tuple[str, str]:
@@ -165,7 +174,7 @@ def generate_answer(
     try:
         response = httpx.post(api_url, json=payload, headers=headers, timeout=60.0)
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+        return _remove_reasoning_blocks(response.json()["choices"][0]["message"]["content"])
     except httpx.HTTPStatusError as e:
         return f"Error: API returned {e.response.status_code}: {e.response.text}"
     except httpx.TimeoutException:
@@ -199,7 +208,7 @@ def ask_groq(prompt: str | None = None, api_key: str | None = None,
     try:
         response = httpx.post(GROQ_API_URL, json=payload, headers=headers, timeout=60.0)
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+        return _remove_reasoning_blocks(response.json()["choices"][0]["message"]["content"])
     except httpx.HTTPStatusError as e:
         return f"Error: API returned {e.response.status_code}: {e.response.text[:200]}"
     except httpx.TimeoutException:

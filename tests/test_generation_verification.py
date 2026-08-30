@@ -138,6 +138,34 @@ def test_providers_preserve_legacy_string_path(provider_fn, monkeypatch):
     assert sent["payload"]["messages"] == [{"role": "user", "content": "legacy prompt string"}]
 
 
+@pytest.mark.parametrize("provider_fn", ["ask_groq", "generate_answer"])
+def test_providers_remove_reasoning_blocks_from_model_responses(provider_fn, monkeypatch):
+    """Reasoning tags from a provider must never reach a user interface."""
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "choices": [{"message": {
+                    "content": "<think>private reasoning</think>\n\nKylian Mbappé scored 8 goals."
+                }}]
+            }
+
+    import httpx
+
+    monkeypatch.setattr(
+        httpx,
+        "post",
+        lambda url, json=None, headers=None, timeout=None: FakeResponse(),
+    )
+
+    answer = getattr(gen_provider, provider_fn)("question", api_key="k")
+
+    assert answer == "Kylian Mbappé scored 8 goals."
+
+
 # --- Canonical renderer -----------------------------------------------------
 
 
@@ -405,3 +433,14 @@ def test_cli_still_builds_the_legacy_prompt_string_for_debug():
         "chat.py must build BOTH the legacy prompt (for /prompt) and the "
         "role-separated messages (for the provider)."
     )
+
+
+def test_remove_reasoning_blocks_handles_unclosed_and_escaped_think_tags():
+    """Incomplete or escaped reasoning blocks must never reach the user."""
+    cases = [
+        ("<think>private reasoning without closing tag", ""),
+        ("\\<think>escaped reasoning</think>\nVisible answer.", "Visible answer."),
+    ]
+
+    for content, expected in cases:
+        assert gen_provider._remove_reasoning_blocks(content) == expected
