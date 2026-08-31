@@ -182,6 +182,35 @@ def execute_route(
                         str(resolved_entity),
                         1,
                     )
+
+                # A resolved TEAM dependency can feed a qualitative continuation
+                # such as "How did the highest-scoring team play?".  Use a
+                # canonical team-style retrieval query so the existing
+                # team-style safeguard can inject the authoritative team
+                # document.  Keep PLAYER dependencies untouched: "How did the
+                # top scorer play?" is a player-performance query, not team style.
+                original_lower = (route.semantic_query or "").lower()
+                if dependency_query.entity == "team":
+                    if "formation" in original_lower:
+                        semantic_execution_query = (
+                            f"{resolved_entity}'s formations and tactics"
+                        )
+                    elif any(
+                        cue in original_lower
+                        for cue in (
+                            " play",
+                            "played",
+                            "playing style",
+                            "style",
+                            "tactics",
+                            "approach",
+                            "passing pattern",
+                        )
+                    ):
+                        semantic_execution_query = (
+                            f"{resolved_entity}'s playing style and tactics"
+                        )
+
                 context = structured_result.explanation or ""
 
     # Ordinary hybrid comparisons remain unchanged.

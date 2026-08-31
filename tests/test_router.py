@@ -940,6 +940,78 @@ def test_compositional_top_scorer_preserves_semantic_continuation():
     assert route.semantic_query == "How did the top scorer play?"
 
 
+
+def test_compositional_team_play_rewrites_to_canonical_team_style(monkeypatch):
+    captured = {}
+
+    def fake_hybrid_search(query, **kwargs):
+        captured["query"] = query
+        return []
+
+    monkeypatch.setattr(router, "hybrid_search", fake_hybrid_search)
+
+    route = router.route_query("How did the highest-scoring team play?")
+
+    class FakeStructuredResult:
+        status = "resolved"
+        data = [{"team_name": "France"}]
+        explanation = "The top goals is 16 by France."
+
+    monkeypatch.setattr(router, "structured_resolve", lambda *args, **kwargs: FakeStructuredResult())
+
+    router.execute_route(route)
+
+    assert captured["query"] == "France's playing style and tactics"
+    assert search._detect_team_style_query(captured["query"]) == "France"
+
+
+def test_compositional_team_formation_rewrites_to_canonical_team_style(monkeypatch):
+    captured = {}
+
+    def fake_hybrid_search(query, **kwargs):
+        captured["query"] = query
+        return []
+
+    monkeypatch.setattr(router, "hybrid_search", fake_hybrid_search)
+
+    route = router.route_query("What formation did the team with the most goals use?")
+
+    class FakeStructuredResult:
+        status = "resolved"
+        data = [{"team_name": "France"}]
+        explanation = "The top goals is 16 by France."
+
+    monkeypatch.setattr(router, "structured_resolve", lambda *args, **kwargs: FakeStructuredResult())
+
+    router.execute_route(route)
+
+    assert captured["query"] == "France's formations and tactics"
+    assert search._detect_team_style_query(captured["query"]) == "France"
+
+
+def test_compositional_player_play_does_not_become_team_style(monkeypatch):
+    captured = {}
+
+    def fake_hybrid_search(query, **kwargs):
+        captured["query"] = query
+        return []
+
+    monkeypatch.setattr(router, "hybrid_search", fake_hybrid_search)
+
+    route = router.route_query("How did the top scorer play?")
+
+    class FakeStructuredResult:
+        status = "resolved"
+        data = [{"player_name": "Kylian Mbapp? Lottin"}]
+        explanation = "The top goals is 8 by Kylian Mbapp? Lottin."
+
+    monkeypatch.setattr(router, "structured_resolve", lambda *args, **kwargs: FakeStructuredResult())
+
+    router.execute_route(route)
+
+    assert captured["query"] == "How did Kylian Mbapp? Lottin play?"
+    assert search._detect_team_style_query(captured["query"]) is None
+
 def test_direct_named_team_style_query_remains_semantic():
     route = router.route_query("How did France play in the final?")
 
