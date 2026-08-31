@@ -58,7 +58,7 @@ def create_vector_store(chunks: list[dict] | None = None,
     model = SentenceTransformer(embedding_config.hf_name)
 
     persist_dir.mkdir(parents=True, exist_ok=True)
-    client = chromadb.PersistentClient(path=str(persist_dir))
+    client = chromadb.PersistentClient(path=str(Path(persist_dir).resolve()))
 
     # Delete existing collection if it exists
     try:
@@ -114,6 +114,6 @@ def create_vector_store(chunks: list[dict] | None = None,
 def get_collection(persist_dir: Path = DB_PATH,
                    collection_name: str = COLLECTION_NAME) -> chromadb.Collection:
     """Load existing ChromaDB collection."""
-    client = chromadb.PersistentClient(path=str(persist_dir))
+    client = chromadb.PersistentClient(path=str(Path(persist_dir).resolve()))
     return client.get_collection(collection_name)
 

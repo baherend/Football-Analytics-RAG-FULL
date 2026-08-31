@@ -1903,3 +1903,99 @@ def test_vector_store_preserves_match_date_metadata(tmp_path, monkeypatch):
 
     stored = collection.get(ids=["c-date"], include=["metadatas"])
     assert stored["metadatas"][0]["match_date"] == "2016-02-14"
+
+
+def test_vector_store_resolves_chroma_path_before_opening_client(monkeypatch, tmp_path):
+    """A relative Chroma path must be scoped to the current cwd before Chroma
+    sees it, preventing client-cache collisions with another cwd."""
+    import numpy as np
+    from src.knowledge.indexing import vector_store
+
+    seen = {}
+
+    class FakeModel:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def encode(self, texts, **kwargs):
+            return np.zeros((len(texts), 8), dtype="float32")
+
+    class FakeCollection:
+        def add(self, **kwargs):
+            pass
+
+    class FakeClient:
+        def __init__(self, path):
+            seen["path"] = path
+
+        def delete_collection(self, name):
+            pass
+
+        def create_collection(self, name, metadata=None):
+            return FakeCollection()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sentence_transformers.SentenceTransformer", FakeModel)
+    monkeypatch.setattr(vector_store.chromadb, "PersistentClient", FakeClient)
+
+    relative_dir = Path("output/competitions/2/27/chroma_db")
+
+    vector_store.create_vector_store(
+        chunks=[
+            {
+                "chunk_id": "c1",
+                "document_id": "d1",
+                "level": "1",
+                "text": "test content",
+                "search_text": "test content",
+            }
+        ],
+        persist_dir=relative_dir,
+        collection_name="competition_2_season_27_documents",
+    )
+
+    assert Path(seen["path"]) == (tmp_path / relative_dir).resolve()
+
+
+def test_dense_search_resolves_chroma_path_before_opening_client(monkeypatch, tmp_path):
+    """Dense retrieval must use the same absolute-path Chroma identity as
+    vector-store construction."""
+    import chromadb
+    import numpy as np
+    from src.retrieval import dense
+
+    seen = {}
+
+    class FakeModel:
+        def encode(self, texts, **kwargs):
+            return np.zeros((len(texts), 8), dtype="float32")
+
+    class FakeCollection:
+        def query(self, **kwargs):
+            return {
+                "ids": [[]],
+                "documents": [[]],
+                "metadatas": [[]],
+                "distances": [[]],
+            }
+
+    class FakeClient:
+        def __init__(self, path):
+            seen["path"] = path
+
+        def get_collection(self, name):
+            return FakeCollection()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(chromadb, "PersistentClient", FakeClient)
+    monkeypatch.setattr("src.cache.get_embedding_model", lambda *args, **kwargs: FakeModel())
+
+    paths = ArtifactPaths(
+        competition_id=2,
+        season_id=27,
+        output_root=Path("output"),
+    )
+
+    dense.dense_search("test query", artifact_paths=paths)
+
+    assert Path(seen["path"]) == paths.chroma_dir.resolve()

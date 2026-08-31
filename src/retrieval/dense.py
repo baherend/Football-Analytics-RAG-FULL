@@ -55,7 +55,7 @@ def dense_search(query: str, k: int = 20,
 
     # Use cached model (loaded once per resolved model name)
     model = get_embedding_model(embedding_model_name)
-    client = PersistentClient(path=str(persist_dir))
+    client = PersistentClient(path=str(Path(persist_dir).resolve()))
     collection = client.get_collection(collection_name)
 
     # Generate query embedding
@@ -104,7 +104,7 @@ def semantic_search(query: str, persist_dir: Path = CHROMA_DIR,
     from src.cache import get_embedding_model
 
     model = get_embedding_model(EMBEDDING_MODEL)
-    client = PersistentClient(path=str(persist_dir))
+    client = PersistentClient(path=str(Path(persist_dir).resolve()))
     collection = client.get_collection(collection_name)
 
     query_embedding = model.encode([query], normalize_embeddings=True).tolist()
