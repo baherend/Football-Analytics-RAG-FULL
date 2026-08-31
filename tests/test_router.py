@@ -902,3 +902,46 @@ def test_knockout_filter_remains_semantic_for_custom_taxonomy():
         and f.value is True
         for f in query.filters
     )
+
+
+
+# ---------------------------------------------------------------------------
+# Tests: Compositional / dependent query planning
+# ---------------------------------------------------------------------------
+
+
+def test_compositional_highest_scoring_team_routes_as_dependent_hybrid():
+    route = router.route_query("How did the highest-scoring team play?")
+
+    assert route.path == "hybrid"
+    assert route.dependency_query is not None
+    assert route.dependency_query.intent == "superlative"
+    assert route.dependency_query.entity == "team"
+    assert route.dependency_query.metric == "goals"
+    assert route.dependency_query.aggregation == "max"
+
+
+def test_compositional_team_with_most_goals_routes_as_dependent_hybrid():
+    route = router.route_query("What formation did the team with the most goals use?")
+
+    assert route.path == "hybrid"
+    assert route.dependency_query is not None
+    assert route.dependency_query.entity == "team"
+    assert route.dependency_query.metric == "goals"
+
+
+def test_compositional_top_scorer_preserves_semantic_continuation():
+    route = router.route_query("How did the top scorer play?")
+
+    assert route.path == "hybrid"
+    assert route.dependency_query is not None
+    assert route.dependency_query.entity == "player"
+    assert route.dependency_query.metric == "goals"
+    assert route.semantic_query == "How did the top scorer play?"
+
+
+def test_direct_named_team_style_query_remains_semantic():
+    route = router.route_query("How did France play in the final?")
+
+    assert route.path == "semantic"
+    assert route.dependency_query is None

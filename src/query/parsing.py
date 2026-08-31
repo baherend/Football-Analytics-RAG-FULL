@@ -22,7 +22,7 @@ import re
 from pathlib import Path
 
 from src.query.query_schema import Filter, StructuredQuery
-from src.query.vocab import resolve_aggregation, resolve_metric
+from src.query.vocab import METRIC_ALIASES, resolve_aggregation, resolve_metric
 from src.stage_taxonomy import StageTaxonomy, WC2022_STAGE_TAXONOMY
 from src.extraction.match_facts import WC2022_DATASET_IDENTITY
 
@@ -138,6 +138,106 @@ def _extract_opponent_filter(query: str) -> Filter | None:
 # ---------------------------------------------------------------------------
 # Structured Query Parsing
 # ---------------------------------------------------------------------------
+
+
+
+def parse_compositional_dependency(
+    query: str,
+    stage_taxonomy: StageTaxonomy = WC2022_STAGE_TAXONOMY,
+) -> tuple[StructuredQuery, str] | None:
+    """
+    Detect one structured entity selector embedded inside a qualitative query.
+
+    The dependency is resolved first, then its authoritative entity is used
+    in the downstream semantic query. This intentionally supports one
+    dependency hop only.
+    """
+    semantic_cue = re.search(
+        r"\b(?:play|played|playing|perform|performed|performance|formation|"
+        r"style|strategy|tactics|defend|defended|defending|attack|attacked|attacking)\b"
+        r"|^\s*describe\b",
+        query,
+        re.IGNORECASE,
+    )
+    if not semantic_cue:
+        return None
+
+    # "team/player with the most/highest/... <metric>"
+    selector = re.search(
+        r"\b(?:the\s+)?(?P<entity>team|player)\s+with\s+(?:the\s+)?"
+        r"(?P<agg>most|highest|best|least|lowest|fewest)\s+"
+        r"(?P<tail>[^?.,]+)",
+        query,
+        re.IGNORECASE,
+    )
+    if selector:
+        entity = selector.group("entity").lower()
+        agg = resolve_aggregation(selector.group("agg").lower())
+        tail = selector.group("tail")
+
+        # Longest metric aliases first, so e.g. "goals conceded"
+        # wins before the shorter "goals".
+        for alias in sorted(METRIC_ALIASES, key=len, reverse=True):
+            metric_match = re.match(
+                rf"{re.escape(alias)}(?=\s|[?.!,]|$)",
+                tail,
+                re.IGNORECASE,
+            )
+            if not metric_match:
+                continue
+
+            metric = resolve_metric(metric_match.group(0))
+            if metric and agg:
+                phrase_end = selector.start("tail") + metric_match.end()
+                phrase = query[selector.start():phrase_end]
+                return (
+                    StructuredQuery(
+                        intent="superlative",
+                        entity=entity,
+                        metric=metric,
+                        aggregation=agg,
+                        limit=1,
+                    ),
+                    phrase,
+                )
+
+    # "highest-scoring team" / "lowest scoring team"
+    scoring = re.search(
+        r"\b(?:the\s+)?(?P<agg>highest|top|best|lowest|least)[-\s]+"
+        r"scoring\s+(?P<entity>team|player)\b",
+        query,
+        re.IGNORECASE,
+    )
+    if scoring:
+        raw_agg = scoring.group("agg").lower()
+        aggregation = "min" if raw_agg in {"lowest", "least"} else "max"
+        return (
+            StructuredQuery(
+                intent="superlative",
+                entity=scoring.group("entity").lower(),
+                metric="goals",
+                aggregation=aggregation,
+                limit=1,
+            ),
+            scoring.group(0),
+        )
+
+    # Reuse existing parsing for lexical selectors such as "top scorer".
+    lexical = re.search(
+        r"\b(?:the\s+)?(?:top|best|leading)\s+"
+        r"(?:scorer|goal\s*scorer|assists?|passer|tackler)\b",
+        query,
+        re.IGNORECASE,
+    )
+    if lexical:
+        dependency = parse_structured_query(
+            lexical.group(0),
+            stage_taxonomy=stage_taxonomy,
+        )
+        if dependency is not None and dependency.intent == "superlative":
+            return dependency, lexical.group(0)
+
+    return None
 
 
 def parse_structured_query(

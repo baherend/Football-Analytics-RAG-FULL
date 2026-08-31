@@ -136,15 +136,61 @@ def execute_route(
     semantic_chunks = None
     context = ""
     match_facts_path = artifact_paths.match_facts if artifact_paths is not None else None
+
+    dependency_query = getattr(route, "dependency_query", None)
+    dependency_phrase = getattr(route, "dependency_phrase", None)
+    dependency_resolved = dependency_query is None
+    semantic_execution_query = route.semantic_query or ""
+
     stage_taxonomy = (
         _load_active_stage_taxonomy(match_facts_path)
         if route.path in ("structured", "hybrid")
         else None
     )
 
-    # For hybrid comparison queries, run structured queries for each entity
+    # Compositional hybrid is sequential:
+    # structured dependency -> authoritative entity -> semantic retrieval.
+    if route.path == "hybrid" and dependency_query is not None:
+        try:
+            structured_result = structured_resolve(
+                dependency_query,
+                data_path=match_facts_path,
+                stage_taxonomy=stage_taxonomy,
+            )
+        except Exception as e:
+            print(f"Structured dependency resolution failed: {e}")
+            structured_result = None
+
+        if (
+            structured_result is not None
+            and structured_result.status in ("resolved", "partial")
+            and structured_result.data
+        ):
+            top = structured_result.data[0]
+            entity_key = (
+                "team_name"
+                if dependency_query.entity == "team"
+                else "player_name"
+            )
+            resolved_entity = top.get(entity_key)
+
+            if resolved_entity:
+                dependency_resolved = True
+                if dependency_phrase:
+                    semantic_execution_query = semantic_execution_query.replace(
+                        dependency_phrase,
+                        str(resolved_entity),
+                        1,
+                    )
+                context = structured_result.explanation or ""
+
+    # Ordinary hybrid comparisons remain unchanged.
     comparison_entities = _detect_comparison(route.semantic_query or "")
-    if route.path == "hybrid" and comparison_entities:
+    if (
+        route.path == "hybrid"
+        and dependency_query is None
+        and comparison_entities
+    ):
         comparison_metric = _detect_comparison_metric(route.semantic_query or "")
         comparison_entity_type = _resolve_comparison_entity_type(
             comparison_entities, data_path=match_facts_path,
@@ -243,11 +289,18 @@ def execute_route(
             except Exception as e:
                 print(f"Semantic fallback failed: {e}")
 
-    if route.path in ("semantic", "hybrid"):
+    if route.path in ("semantic", "hybrid") and dependency_resolved:
         try:
-            semantic_chunks = hybrid_search(route.semantic_query or "", k=semantic_k,
-                                            artifact_paths=artifact_paths)
-            context = build_context(semantic_chunks)
+            semantic_chunks = hybrid_search(
+                semantic_execution_query,
+                k=semantic_k,
+                artifact_paths=artifact_paths,
+            )
+            semantic_context = build_context(semantic_chunks)
+            if context and semantic_context:
+                context = context + "\n\n" + semantic_context
+            elif semantic_context:
+                context = semantic_context
         except Exception as e:
             print(f"Semantic search failed: {e}")
 

@@ -35,7 +35,11 @@ from dataclasses import dataclass
 from src.artifacts import ArtifactPaths
 from src.query.query_schema import StructuredQuery
 from src.query.intent import classify_query
-from src.query.parsing import _load_active_stage_taxonomy, parse_structured_query
+from src.query.parsing import (
+    _load_active_stage_taxonomy,
+    parse_compositional_dependency,
+    parse_structured_query,
+)
 
 
 @dataclass
@@ -46,6 +50,8 @@ class Route:
     reason: str
     structured_query: StructuredQuery | None = None
     semantic_query: str | None = None
+    dependency_query: StructuredQuery | None = None
+    dependency_phrase: str | None = None
 
 
 def route_query(
@@ -53,6 +59,29 @@ def route_query(
     artifact_paths: ArtifactPaths | None = None,
 ) -> Route:
     """Determine routing using the selected dataset's stage vocabulary."""
+
+    # Detect an embedded structured selector before flat classification.
+    dependency = parse_compositional_dependency(query)
+    if dependency is not None:
+        match_facts_path = (
+            artifact_paths.match_facts if artifact_paths is not None else None
+        )
+        stage_taxonomy = _load_active_stage_taxonomy(match_facts_path)
+        dependency = parse_compositional_dependency(
+            query,
+            stage_taxonomy=stage_taxonomy,
+        )
+        if dependency is not None:
+            dependency_query, dependency_phrase = dependency
+            return Route(
+                path="hybrid",
+                confidence=0.9,
+                reason="Query has a structured dependency feeding a semantic continuation",
+                semantic_query=query,
+                dependency_query=dependency_query,
+                dependency_phrase=dependency_phrase,
+            )
+
     classification, confidence = classify_query(query)
 
     if classification == "structured":
