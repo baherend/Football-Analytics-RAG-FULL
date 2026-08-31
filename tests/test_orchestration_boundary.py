@@ -21,6 +21,7 @@ from src.orchestration.policy import (
     finalize_answer,
     should_refuse,
 )
+from src.query.query_schema import ComparisonResult, ComparisonValue
 
 
 # --- B0: one module, one identity, one instance -----------------------------
@@ -180,6 +181,41 @@ def test_finalize_corrects_contradicted_numeric_claims():
     assert out.corrected is True
     assert out.validation is not None and out.validation.is_valid is False
     assert out.answer != "Jamie Vardy scored 11 goals."
+
+
+def test_finalize_uses_original_question_language_for_comparison_correction():
+    comparison = ComparisonResult(
+        status="resolved",
+        metric="goals",
+        values=[
+            ComparisonValue(entity_name="Alpha Player", value=25),
+            ComparisonValue(entity_name="Beta Player", value=24),
+        ],
+        explanation="Alpha Player: 25 | Beta Player: 24",
+    )
+    wrong_english_draft = "Beta Player scored more goals than Alpha Player."
+
+    arabic = finalize_answer(
+        wrong_english_draft,
+        _routed(structured=comparison),
+        True,
+        response_language="ar",
+    )
+    english = finalize_answer(
+        wrong_english_draft,
+        _routed(structured=comparison),
+        True,
+    )
+
+    assert arabic.corrected is True
+    assert "Alpha Player" in arabic.answer
+    assert "25 goals" in arabic.answer
+    assert any("\u0600" <= ch <= "\u06ff" for ch in arabic.answer)
+    assert " had " not in arabic.answer
+    assert english.answer == (
+        "Alpha Player had 25 goals compared with Beta Player's 24, "
+        "so Alpha Player was higher by 1."
+    )
 
 
 def test_finalize_leaves_supported_answers_alone():

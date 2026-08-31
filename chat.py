@@ -129,6 +129,8 @@ def process_query(question: str) -> str:
 
     Returns the generated answer.
     """
+    response_language = prompting_mod.response_language_for_question(question)
+
     # Step 0: Search dataset-scoped conversation memory for context relevant
     # to this question. This never supplies football facts -- it only
     # (a) may resolve a pronoun in the *retrieval* query below, and
@@ -212,7 +214,7 @@ def process_query(question: str) -> str:
         # No citation list for the deterministic refusal, even if evidence
         # was retrieved -- it was judged insufficient, so showing it here
         # would misleadingly imply it supports an answer it does not.
-        answer = prompting_mod.INSUFFICIENT_CONTEXT_MESSAGE
+        answer = prompting_mod.localized_insufficient_context_message(question)
     else:
         try:
             answer = prompting_mod.generate_answer(
@@ -230,7 +232,12 @@ def process_query(question: str) -> str:
             # fire here: should_refuse() is true only when there is no usable
             # structured result, so `has_structured` is always False on the
             # refusal path.
-            finalized = orchestration.finalize_answer(answer, result, has_structured)
+            finalized = orchestration.finalize_answer(
+                answer,
+                result,
+                has_structured,
+                response_language=response_language,
+            )
             answer = finalized.answer
             citations = finalized.citations
             if finalized.corrected:

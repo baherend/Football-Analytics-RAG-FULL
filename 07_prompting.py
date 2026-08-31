@@ -79,7 +79,9 @@ from src.generation.prompt import (
     build_messages,
     build_prompt,
     format_context_for_prompt,
+    localized_insufficient_context_message,
     render_evidence,
+    response_language_for_question,
     select_system_prompt,
 )
 from src.generation.provider import (
@@ -158,6 +160,7 @@ def answer_question(question: str, api_key: str | None = None,
     "loading" gap; showing retrieved-but-insufficient evidence under a
     refusal would misleadingly imply it supports an answer it does not.
     """
+    response_language = response_language_for_question(question)
     relevant_turns = memory.search(artifact_paths, question) if memory is not None else []
     retrieval_query = resolve_pronoun_references(question, relevant_turns)
 
@@ -184,7 +187,7 @@ def answer_question(question: str, api_key: str | None = None,
     full_context = assembled.full_context
 
     if should_refuse(result):
-        answer = INSUFFICIENT_CONTEXT_MESSAGE
+        answer = localized_insufficient_context_message(question)
         citations: list[dict] = []
     else:
         # build_prompt() is still called (and still monkeypatched by tests) so
@@ -203,7 +206,12 @@ def answer_question(question: str, api_key: str | None = None,
         answer = ask_groq(prompt, api_key=key, model=model, messages=messages)
 
         # Post-generation verification + citations (shared policy).
-        finalized = finalize_answer(answer, result, has_structured)
+        finalized = finalize_answer(
+            answer,
+            result,
+            has_structured,
+            response_language=response_language,
+        )
         answer = finalized.answer
         citations = finalized.citations
 

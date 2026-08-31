@@ -16,6 +16,7 @@ evidence.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 
@@ -140,6 +141,7 @@ def _generate_corrected_answer(
     llm_answer: str,
     structured_explanation: str,
     contradictions: list[dict],
+    response_language: str = "en",
 ) -> str:
     """Correct contradicted numeric claims using verified structured values."""
     corrected = llm_answer
@@ -158,6 +160,39 @@ def _generate_corrected_answer(
             flags=re.IGNORECASE,
         )
 
+    corrected_arabic_narrative = corrected != llm_answer and any(
+        unicodedata.category(ch).startswith("L")
+        and (
+            "\u0600" <= ch <= "\u06ff"
+            or "\u0750" <= ch <= "\u077f"
+            or "\u08a0" <= ch <= "\u08ff"
+            or "\ufb50" <= ch <= "\ufdff"
+            or "\ufe70" <= ch <= "\ufeff"
+        )
+        for ch in corrected
+    )
+    if response_language == "ar" and corrected_arabic_narrative:
+        return (
+            f"{corrected}\n\n"
+            "(ملاحظة: تم التحقق من الأرقام باستخدام البيانات المنظمة.)"
+        )
+
+    if response_language == "ar":
+        verified_values = []
+        for contradiction in contradictions:
+            fact = (
+                f"القيمة الصحيحة لمقياس {contradiction['metric']} هي "
+                f"{contradiction['expected_value']:g} {contradiction['metric']}."
+            )
+            if fact not in verified_values:
+                verified_values.append(fact)
+        verified_text = "\n".join(verified_values)
+        return (
+            "استنادًا إلى البيانات المنظمة:\n"
+            f"{verified_text}\n\n"
+            "(ملاحظة: تم التحقق من الأرقام باستخدام البيانات المنظمة.)"
+        )
+
     if corrected == llm_answer:
         return (
             f"Based on the structured data:\n{structured_explanation}\n\n"
@@ -165,10 +200,7 @@ def _generate_corrected_answer(
             "replaced with verified data.)"
         )
 
-    return (
-        f"{corrected}\n\n"
-        "(Note: Numbers have been verified against structured data.)"
-    )
+    return f"{corrected}\n\n(Note: Numbers have been verified against structured data.)"
 
 
 def validate_answer(
@@ -177,6 +209,7 @@ def validate_answer(
     structured_value: float | int | None = None,
     structured_entity: str | None = None,
     structured_metric: str | None = None,
+    response_language: str = "en",
 ) -> ValidationResult:
     """Validate generated numeric claims against authoritative structured facts."""
     result = ValidationResult(is_valid=True)
@@ -233,6 +266,7 @@ def validate_answer(
             llm_answer,
             structured_explanation,
             result.contradictions,
+            response_language=response_language,
         )
 
     return result

@@ -243,6 +243,65 @@ def test_answer_question_unanswerable_refuses_even_without_api_key(monkeypatch):
     assert not generation_calls
 
 
+def test_arabic_deterministic_refusal_through_both_entry_points(monkeypatch):
+    chat = import_module("chat")
+    selected = ArtifactPaths(2, 27)
+    unanswerable = AnswerabilityAssessment(
+        status="unanswerable", matched_terms=(), missing_terms=("لاعب",),
+    )
+    routed = SimpleNamespace(
+        structured_result=None,
+        semantic_chunks=[],
+        context="No relevant context found.",
+        answerability=unanswerable,
+    )
+
+    monkeypatch.setattr(
+        prompting,
+        "route_and_execute",
+        lambda q, artifact_paths=None: routed,
+    )
+    monkeypatch.setattr(
+        chat.router_mod,
+        "route_query",
+        lambda q, artifact_paths=None: SimpleNamespace(
+            path="semantic", confidence=1.0, reason="test", semantic_query=q,
+        ),
+    )
+    monkeypatch.setattr(
+        chat.router_mod,
+        "execute_route",
+        lambda route, semantic_k=5, artifact_paths=None: routed,
+    )
+    monkeypatch.setattr(prompting, "GROQ_API_KEY", None)
+    chat.state.artifact_paths = selected
+    chat.state.memory = ConversationMemory()
+    chat.state.mode = "hybrid"
+    chat.state.history = []
+
+    generation_calls = []
+    monkeypatch.setattr(
+        prompting,
+        "ask_groq",
+        lambda *a, **kw: generation_calls.append("streamlit"),
+    )
+    monkeypatch.setattr(
+        chat.prompting_mod,
+        "generate_answer",
+        lambda *a, **kw: generation_calls.append("cli"),
+    )
+
+    streamlit_answer, _ = prompting.answer_question(
+        "من سجل أهدافًا أكثر؟", artifact_paths=selected,
+    )
+    cli_answer = chat.process_query("من سجل أهدافًا أكثر؟")
+
+    expected = "لا أملك بيانات كافية للإجابة عن هذا السؤال."
+    assert streamlit_answer == expected
+    assert cli_answer == expected
+    assert not generation_calls
+
+
 def test_format_context_for_prompt_distinguishes_chunks_with_identical_display_metadata():
     """
     Evidence-attribution gap: format_context_for_prompt() (chat.py's semantic
@@ -792,6 +851,48 @@ def test_answer_question_corrects_comparison_outcome_contradiction(monkeypatch):
     assert "alpha player" in answer.lower(), (
         f"the corrected answer must name the actual higher entity (Alpha Player), got: {answer!r}"
     )
+
+
+def test_arabic_question_corrects_english_comparison_draft_in_arabic(monkeypatch):
+    selected = ArtifactPaths(2, 27)
+    comparison = ComparisonResult(
+        status="resolved",
+        metric="goals",
+        values=[
+            ComparisonValue(entity_name="Alpha Player", value=25),
+            ComparisonValue(entity_name="Beta Player", value=24),
+        ],
+        explanation="Alpha Player: 25 | Beta Player: 24",
+    )
+    answerable = AnswerabilityAssessment(
+        status="answerable", matched_terms=("goals",), missing_terms=(),
+    )
+    monkeypatch.setattr(
+        prompting,
+        "route_and_execute",
+        lambda q, artifact_paths=None: SimpleNamespace(
+            structured_result=comparison,
+            semantic_chunks=[],
+            context=comparison.explanation,
+            answerability=answerable,
+        ),
+    )
+    wrong_english_draft = "Beta Player scored more goals than Alpha Player."
+    monkeypatch.setattr(
+        prompting, "ask_groq", lambda *a, **kw: wrong_english_draft,
+    )
+
+    answer, _ = prompting.answer_question(
+        "من سجل أهدافًا أكثر، Alpha Player أم Beta Player؟",
+        api_key="test-key",
+        artifact_paths=selected,
+    )
+
+    assert answer != wrong_english_draft
+    assert "Alpha Player" in answer
+    assert "25 goals" in answer
+    assert any("\u0600" <= ch <= "\u06ff" for ch in answer)
+    assert " had " not in answer
 
 
 def test_chat_process_query_corrects_comparison_outcome_contradiction(monkeypatch):

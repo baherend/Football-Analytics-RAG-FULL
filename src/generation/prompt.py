@@ -35,6 +35,7 @@ two is pinned in tests/test_generation_verification.py.
 
 from __future__ import annotations
 
+import unicodedata
 from typing import Any
 
 from src.context.evidence import EvidencePack
@@ -74,6 +75,49 @@ Rules:
 # Canonical refusal text -- matches the wording both system prompts already
 # instruct the LLM to produce when evidence is insufficient (rule 2/4 above).
 INSUFFICIENT_CONTEXT_MESSAGE = "I don't have enough data to answer this question."
+ARABIC_INSUFFICIENT_CONTEXT_MESSAGE = "لا أملك بيانات كافية للإجابة عن هذا السؤال."
+
+ARABIC_RESPONSE_INSTRUCTION = """
+LANGUAGE RULE:
+The user's question is in Arabic. Answer in Arabic.
+Keep player names, team names, source labels, and exact numeric/statistical
+values faithful to the supplied evidence. Do not translate or invent evidence.
+""".strip()
+
+
+def contains_arabic(text: str) -> bool:
+    """Return True when text contains at least one Arabic-script letter."""
+    return any(
+        unicodedata.category(ch).startswith("L")
+        and (
+            "\u0600" <= ch <= "\u06ff"
+            or "\u0750" <= ch <= "\u077f"
+            or "\u08a0" <= ch <= "\u08ff"
+            or "\ufb50" <= ch <= "\ufdff"
+            or "\ufe70" <= ch <= "\ufeff"
+        )
+        for ch in text
+    )
+
+
+def response_language_for_question(question: str) -> str:
+    """Derive the response language once from the original user question."""
+    return "ar" if contains_arabic(question) else "en"
+
+
+def localized_insufficient_context_message(question: str) -> str:
+    """Return the deterministic refusal in the user's question language."""
+    if response_language_for_question(question) == "ar":
+        return ARABIC_INSUFFICIENT_CONTEXT_MESSAGE
+    return INSUFFICIENT_CONTEXT_MESSAGE
+
+
+def _system_prompt_for_question(question: str, has_structured: bool = False) -> str:
+    """Add response-language policy without changing English legacy prompts."""
+    system_prompt = select_system_prompt(has_structured)
+    if response_language_for_question(question) == "ar":
+        return f"{system_prompt}\n\n{ARABIC_RESPONSE_INSTRUCTION}"
+    return system_prompt
 
 
 def select_system_prompt(has_structured: bool = False) -> str:
@@ -124,7 +168,7 @@ def build_prompt(
     because chat.py and several tests call/patch it directly. Providers now
     send build_messages() instead -- see this module's docstring.
     """
-    system_prompt = select_system_prompt(has_structured)
+    system_prompt = _system_prompt_for_question(question, has_structured)
     return f"""{system_prompt}
 
 {_user_content(question, context)}"""
@@ -165,6 +209,6 @@ def build_messages(
     build_prompt()'s legacy string exactly (pinned by test).
     """
     return [
-        {"role": "system", "content": select_system_prompt(has_structured)},
+        {"role": "system", "content": _system_prompt_for_question(question, has_structured)},
         {"role": "user", "content": _user_content(question, context)},
     ]

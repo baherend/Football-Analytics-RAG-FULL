@@ -158,6 +158,7 @@ def finalize_answer(
     answer: str,
     routed: Any,
     has_structured: bool,
+    response_language: str = "en",
 ) -> FinalizedAnswer:
     """Verify a generated answer against structured facts, then build citations.
 
@@ -171,7 +172,11 @@ def finalize_answer(
 
     if has_structured:
         try:
-            validation = validate_structured_answer(answer, structured_result)
+            validation = validate_structured_answer(
+                answer,
+                structured_result,
+                response_language=response_language,
+            )
             if not validation.is_valid:
                 answer = validation.corrected_answer or answer
                 corrected = True

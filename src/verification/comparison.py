@@ -103,13 +103,18 @@ def _claimed_difference(text: str, metric_word: str) -> float | None:
     return None
 
 
-def _generate_comparison_correction(comparison_result: ComparisonResult) -> str:
+def _generate_comparison_correction(
+    comparison_result: ComparisonResult,
+    response_language: str = "en",
+) -> str:
     """Deterministic corrected comparison sentence -- never another LLM call."""
     name_a, value_a = comparison_result.values[0].entity_name, comparison_result.values[0].value
     name_b, value_b = comparison_result.values[1].entity_name, comparison_result.values[1].value
     metric = comparison_result.metric
 
     if comparison_result.outcome == "tie":
+        if response_language == "ar":
+            return f"تعادل {name_a} و{name_b} عند {value_a:g} {metric} لكل منهما."
         return f"{name_a} and {name_b} were tied at {value_a:g} {metric} each."
 
     if comparison_result.outcome == "entity_a_higher":
@@ -119,13 +124,24 @@ def _generate_comparison_correction(comparison_result: ComparisonResult) -> str:
         higher_name, higher_value = name_b, value_b
         lower_name, lower_value = name_a, value_a
 
+    if response_language == "ar":
+        return (
+            f"لدى {higher_name} {higher_value:g} {metric} مقابل "
+            f"{lower_value:g} لدى {lower_name}، لذا يتفوق {higher_name} "
+            f"بفارق {comparison_result.difference:g}."
+        )
+
     return (
         f"{higher_name} had {higher_value:g} {metric} compared with {lower_name}'s {lower_value:g}, "
         f"so {higher_name} was higher by {comparison_result.difference:g}."
     )
 
 
-def validate_comparison_answer(llm_answer: str, comparison_result: ComparisonResult) -> ValidationResult:
+def validate_comparison_answer(
+    llm_answer: str,
+    comparison_result: ComparisonResult,
+    response_language: str = "en",
+) -> ValidationResult:
     """
     Validate a generated comparison answer against ComparisonResult's
     deterministic structured facts (both entity values, difference,
@@ -202,12 +218,19 @@ def validate_comparison_answer(llm_answer: str, comparison_result: ComparisonRes
     if contradictions:
         result.is_valid = False
         result.contradictions = contradictions
-        result.corrected_answer = _generate_comparison_correction(comparison_result)
+        result.corrected_answer = _generate_comparison_correction(
+            comparison_result,
+            response_language=response_language,
+        )
 
     return result
 
 
-def validate_structured_answer(llm_answer: str, structured_result) -> ValidationResult:
+def validate_structured_answer(
+    llm_answer: str,
+    structured_result,
+    response_language: str = "en",
+) -> ValidationResult:
     """
     Shared validation dispatch used by both chat.py::process_query() and
     answer_question(): validate_comparison_answer() for a ComparisonResult
@@ -218,11 +241,16 @@ def validate_structured_answer(llm_answer: str, structured_result) -> Validation
     regardless of which validator ran.
     """
     if isinstance(structured_result, ComparisonResult):
-        return validate_comparison_answer(llm_answer, structured_result)
+        return validate_comparison_answer(
+            llm_answer,
+            structured_result,
+            response_language=response_language,
+        )
     return validate_answer(
         llm_answer=llm_answer,
         structured_explanation=structured_result.explanation,
         structured_value=getattr(structured_result, "aggregated_value", None),
         structured_metric=getattr(getattr(structured_result, "query", None), "metric", None),
+        response_language=response_language,
     )
 
