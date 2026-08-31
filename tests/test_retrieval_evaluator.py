@@ -754,10 +754,9 @@ def test_current_ground_truth_snapshot_is_valid():
     assert errors == []
 
     # Chunks hash
-    import hashlib
+    from src.evaluation.ground_truth.semantic import _compute_sha256
 
-    with open("output/chunks.json", "rb") as f:
-        actual_hash = hashlib.sha256(f.read()).hexdigest()
+    actual_hash = _compute_sha256("output/chunks.json")
     assert actual_hash == SEMANTIC_GROUND_TRUTH_METADATA["chunks_sha256"]
 
     # All document IDs exist and no '-chunk-'

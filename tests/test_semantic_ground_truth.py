@@ -137,7 +137,7 @@ def test_metadata_snapshot_matches_chunks(chunks):
     from pathlib import Path
 
     path = Path(SEMANTIC_GROUND_TRUTH_METADATA["chunks_path"])
-    actual_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    actual_sha = hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
     assert actual_sha == SEMANTIC_GROUND_TRUTH_METADATA["chunks_sha256"], (
         f"chunks SHA-256 mismatch.\n"
         f"Stored: {SEMANTIC_GROUND_TRUTH_METADATA['chunks_sha256']}\n"
@@ -1083,3 +1083,16 @@ def test_gt_l2_04_f4_evidence_preserves_corpus_truncation(cases_by_id):
     assert any("0.3 xG" in s for s in f4["evidence_snippets"]), (
         "gt-l2-04/f4 evidence must contain '0.3 xG' threshold"
     )
+
+def test_chunks_sha256_is_line_ending_portable(tmp_path):
+    """LF and CRLF representations of the same snapshot have one identity."""
+    from src.evaluation.ground_truth.semantic import _compute_sha256
+
+    lf_path = tmp_path / "lf.json"
+    crlf_path = tmp_path / "crlf.json"
+    payload = b'[\n  {"document_id": "L1-test"}\n]\n'
+
+    lf_path.write_bytes(payload)
+    crlf_path.write_bytes(payload.replace(b"\n", b"\r\n"))
+
+    assert _compute_sha256(lf_path) == _compute_sha256(crlf_path)

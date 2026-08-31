@@ -2058,8 +2058,12 @@ def index_chunks_by_document_id(chunks: list[dict]) -> dict[str, list[dict]]:
 
 
 def _compute_sha256(chunks_path: str | Path) -> str:
-    """Compute SHA-256 of the chunks file."""
-    data = Path(chunks_path).read_bytes()
+    """Compute an OS-stable SHA-256 for a chunks snapshot.
+
+    JSON content is hashed after CRLF-to-LF normalization so the same
+    snapshot has the same identity on Windows and Unix-like systems.
+    """
+    data = Path(chunks_path).read_bytes().replace(b"\r\n", b"\n")
     return hashlib.sha256(data).hexdigest()
 
 

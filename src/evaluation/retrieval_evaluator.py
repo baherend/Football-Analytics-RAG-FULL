@@ -173,9 +173,11 @@ def validate_ground_truth_and_chunks(
             f"Ground Truth validation failed with {len(errors)} errors: {errors[:3]}"
         )
 
-    # Validate chunks hash
-    with open(chunks_path, "rb") as f:
-        actual_hash = hashlib.sha256(f.read()).hexdigest()
+    # Enforce snapshot integrity even for custom validators. Use the same
+    # canonical line-ending-stable hash as Ground Truth metadata validation.
+    from src.evaluation.ground_truth.semantic import _compute_sha256
+
+    actual_hash = _compute_sha256(chunks_path)
     stored_hash = metadata["chunks_sha256"]
     if actual_hash != stored_hash:
         raise RetrievalEvaluationError(
