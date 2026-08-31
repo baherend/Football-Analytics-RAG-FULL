@@ -23,7 +23,7 @@ EPL_2015_16_GROUND_TRUTH_METADATA: dict = {
     "competition_id": 2,
     "season_id": 27,
     "chunks_path": "output/competitions/2/27/chunks.json",
-    "chunks_sha256": "e4a16678b202ac94bf69970a981a109813d2dcabb1ad8d6b3fb3524f8c28ff90",
+    "chunks_sha256": "42dfaa75d1c54fba649a300ae72ab959fe07a4e28db2558b7ba0433fddc2f3f8",
     "retrieval_unit": "document_id",
     "expected_case_count": 24,
     "expected_case_group_counts": {
