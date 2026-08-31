@@ -34,7 +34,7 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -70,15 +70,12 @@ PROVIDER_KEYS = {
 #    key "llama" and the raw id "llama-3.3-70b-versatile" resolve to the SAME
 #    Groq model (likewise "llama-8b" / "llama-3.1-8b-instant").
 #
-# This tuple records what the app *offers*; it asserts nothing about whether a
-# given ID is still live at Groq. That could not be established from the
-# repository (no manifest, no doc, no test), so no model was added or removed
-# here -- see PROJECT_MEMORY.md for the open product question.
+# Direct Streamlit models supported by the current Groq integration.
+# Keep this list explicit so removed/deprecated provider models are not exposed.
 GROQ_DIRECT_MODELS: tuple[str, ...] = (
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "gemma2-9b-it",
-    "mixtral-8x7b-32768",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.6-27b",
 )
 
 

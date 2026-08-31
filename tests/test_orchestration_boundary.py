@@ -227,6 +227,21 @@ def test_streamlit_model_list_comes_from_the_provider_module():
         )
 
 
+
+def test_streamlit_groq_models_use_current_supported_defaults():
+    import os
+    from src.generation.provider import GROQ_DIRECT_MODELS, GROQ_MODEL
+
+    assert GROQ_DIRECT_MODELS == (
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.6-27b",
+    )
+
+    # GROQ_MODEL is intentionally environment-overridable.
+    if "GROQ_MODEL" not in os.environ:
+        assert GROQ_MODEL == GROQ_DIRECT_MODELS[0]
+
 def test_every_offered_model_resolves_to_a_known_provider():
     """Whatever any interface offers must dispatch to a provider that has a
     declared API-key environment variable."""
