@@ -16,6 +16,7 @@ applied to a metric that has no per-period data.
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -521,6 +522,11 @@ METRIC_SYNONYMS = {
     "goal": "goals",
     "scored": "goals",
     "scoring": "goals",
+    "هدف": "goals",
+    "هدفا": "goals",
+    "اهداف": "goals",
+    "الهدف": "goals",
+    "الاهداف": "goals",
     # Assists
     "assists": "assists",
     "assist": "assists",
@@ -630,6 +636,10 @@ AGGREGATION_SYNONYMS = {
     "mean": "avg",
     "per match": "avg",
     "per game": "avg",
+    "اكثر": "max",
+    "الاكثر": "max",
+    "اكبر عدد": "max",
+    "اكبر عدد من": "max",
 }
 
 STAGE_SYNONYMS = {
@@ -660,9 +670,21 @@ STAGE_SYNONYMS = {
 # ---------------------------------------------------------------------------
 
 
+def normalize_query_text(text: str) -> str:
+    """Normalize Arabic diacritics/forms while leaving English text unchanged."""
+    lowered = text.lower().strip()
+    if not any("\u0600" <= ch <= "\u06ff" for ch in lowered):
+        return lowered
+
+    decomposed = unicodedata.normalize("NFKD", lowered).replace("ـ", "")
+    return "".join(
+        ch for ch in decomposed if unicodedata.category(ch) != "Mn"
+    )
+
+
 def resolve_metric(name: str) -> str | None:
     """Resolve a metric name or synonym to the canonical metric name."""
-    name_lower = name.lower().strip()
+    name_lower = normalize_query_text(name)
     # Direct match (player or team metrics)
     if name_lower in ALL_METRICS:
         return name_lower
@@ -672,7 +694,7 @@ def resolve_metric(name: str) -> str | None:
 
 def resolve_aggregation(name: str) -> str | None:
     """Resolve an aggregation name or synonym."""
-    name_lower = name.lower().strip()
+    name_lower = normalize_query_text(name)
     if name_lower in AGGREGATIONS:
         return name_lower
     return AGGREGATION_SYNONYMS.get(name_lower)

@@ -95,6 +95,53 @@ def test_parse_which_team():
     assert query.metric == "xg"
 
 
+def test_arabic_goal_superlatives_parse_and_route_structured():
+    cases = [
+        ("من هو هداف كأس العالم 2022 وكم هدفًا سجل؟", "player"),
+        ("من سجل أكبر عدد من الأهداف؟", "player"),
+        ("ما الفريق الأكثر تسجيلًا للأهداف؟", "team"),
+    ]
+
+    for question, expected_entity in cases:
+        parsed = router.parse_structured_query(question)
+        route = router.route_query(question)
+
+        assert parsed is not None, question
+        assert parsed.intent == "superlative", question
+        assert parsed.entity == expected_entity, question
+        assert parsed.metric == "goals", question
+        assert parsed.aggregation == "max", question
+        assert parsed.limit == 1, question
+        assert route.path == "structured", question
+        assert route.structured_query == parsed, question
+
+
+def test_arabic_top_scorer_resolves_through_existing_structured_resolver():
+    parsed = router.parse_structured_query("من هو هداف كأس العالم 2022 وكم هدفًا سجل؟")
+    assert parsed is not None
+
+    result = structured_resolve(parsed)
+    assert result.status == "resolved"
+    assert result.aggregated_value is not None
+
+
+def test_arabic_structured_support_preserves_english_superlative_parity():
+    english = router.parse_structured_query("Who scored the most goals?")
+    arabic = router.parse_structured_query("من سجل أكبر عدد من الأهداف؟")
+
+    assert english is not None and arabic is not None
+    assert arabic == english
+    assert router.route_query("Who scored the most goals?").path == "structured"
+
+
+def test_qualitative_arabic_question_remains_semantic():
+    question = "كيف لعبت الأرجنتين في المباراة النهائية؟"
+
+    assert router.classify_query(question)[0] == "semantic"
+    assert router.parse_structured_query(question) is None
+    assert router.route_query(question).path == "semantic"
+
+
 # ---------------------------------------------------------------------------
 # Tests: Execution
 # ---------------------------------------------------------------------------

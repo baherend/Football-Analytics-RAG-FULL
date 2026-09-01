@@ -22,7 +22,12 @@ import re
 from pathlib import Path
 
 from src.query.query_schema import Filter, StructuredQuery
-from src.query.vocab import METRIC_ALIASES, resolve_aggregation, resolve_metric
+from src.query.vocab import (
+    METRIC_ALIASES,
+    normalize_query_text,
+    resolve_aggregation,
+    resolve_metric,
+)
 from src.stage_taxonomy import StageTaxonomy, WC2022_STAGE_TAXONOMY
 from src.extraction.match_facts import WC2022_DATASET_IDENTITY
 
@@ -245,11 +250,42 @@ def parse_structured_query(
     stage_taxonomy: StageTaxonomy = WC2022_STAGE_TAXONOMY,
 ) -> StructuredQuery | None:
     """Parse a query into a StructuredQuery using the active stage vocabulary."""
-    query_lower = query.lower().strip()
+    query_lower = normalize_query_text(query)
 
     stage_filter = _extract_stage_filter(query, stage_taxonomy=stage_taxonomy)
     opponent_filter = _extract_opponent_filter(query)
     filters = [f for f in [stage_filter, opponent_filter] if f is not None]
+
+    arabic_metric = resolve_metric("الاهداف")
+    arabic_aggregation = resolve_aggregation("الاكثر")
+    if arabic_metric and arabic_aggregation:
+        if re.search(r"(?<!\w)(?:من\s+هو\s+)?(?:ال)?هداف(?!\w)", query_lower):
+            return StructuredQuery(
+                intent="superlative", entity="player", metric=arabic_metric,
+                aggregation=arabic_aggregation, limit=1, filters=filters,
+            )
+
+        if re.search(
+            r"من\s+(?:هو\s+)?(?:اللاعب\s+)?(?:الذي\s+)?(?:سجل|احرز)\s+"
+            r"(?:اكبر\s+عدد\s+من|(?:ال)?اكثر)\s+(?:ال)?اهداف",
+            query_lower,
+        ):
+            return StructuredQuery(
+                intent="superlative", entity="player", metric=arabic_metric,
+                aggregation=arabic_aggregation, limit=1, filters=filters,
+            )
+
+        if re.search(
+            r"(?:ما|من)\s+(?:هو\s+)?الفريق\s+(?:"
+            r"(?:ال)?اكثر\s+(?:تسجيلا|احرازا)\s+ل(?:ل)?(?:ال)?اهداف|"
+            r"(?:الذي\s+)?(?:سجل|احرز)\s+"
+            r"(?:اكبر\s+عدد\s+من|(?:ال)?اكثر)\s+(?:ال)?اهداف)",
+            query_lower,
+        ):
+            return StructuredQuery(
+                intent="superlative", entity="team", metric=arabic_metric,
+                aggregation=arabic_aggregation, limit=1, filters=filters,
+            )
 
     # Pattern: "how many <metric> did <player> score/have"
     match = re.search(

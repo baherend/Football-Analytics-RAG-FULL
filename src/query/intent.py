@@ -27,7 +27,7 @@ from pathlib import Path
 # instead of sideways on each other.
 from src.team_style import _detect_team_style_query
 from src.query.resolver import resolve_entity_type
-from src.query.vocab import resolve_metric
+from src.query.vocab import normalize_query_text, resolve_metric
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +195,12 @@ STRUCTURED_PATTERNS = [
     r"who\s+(?:has|had)\s+(?:the\s+)?(?:most|fewest)\s+clean\s*sheets?",
     r"what\s+(?:is|was|are|were)\s+(.+?)(?:'s|'s)?\s+([\w\s]+?)(?:\s*$|\s*\?)",
     r"^(.+?)\s+(goals|assists|xg|shots|passes|minutes|tackles|interceptions)$",
+    r"(?<!\w)(?:من\s+هو\s+)?(?:ال)?هداف(?!\w)",
+    r"من\s+(?:هو\s+)?(?:اللاعب\s+)?(?:الذي\s+)?(?:سجل|احرز)\s+"
+    r"(?:اكبر\s+عدد\s+من|(?:ال)?اكثر)\s+(?:ال)?اهداف",
+    r"(?:ما|من)\s+(?:هو\s+)?الفريق\s+(?:"
+    r"(?:ال)?اكثر\s+(?:تسجيلا|احرازا)\s+ل(?:ل)?(?:ال)?اهداف|"
+    r"(?:الذي\s+)?(?:سجل|احرز)\s+(?:اكبر\s+عدد\s+من|(?:ال)?اكثر)\s+(?:ال)?اهداف)",
 ]
 
 SEMANTIC_PATTERNS = [
@@ -227,7 +233,7 @@ SEMANTIC_KEYWORDS = {
 
 def classify_query(query: str) -> tuple[str, float]:
     """Classify a query as "structured", "semantic", or "hybrid"."""
-    query_lower = query.lower().strip()
+    query_lower = normalize_query_text(query)
 
     if _detect_comparison(query):
         return "hybrid", 0.9

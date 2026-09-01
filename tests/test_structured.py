@@ -36,6 +36,8 @@ def test_metric_resolution():
     assert resolve_metric("expected goals") == "xg"
     assert resolve_metric("passes") == "passes_attempted"
     assert resolve_metric("minutes") == "minutes"
+    assert resolve_metric("هدفًا") == "goals"
+    assert resolve_metric("الأهداف") == "goals"
     assert resolve_metric("nonexistent") is None
 
 
@@ -46,6 +48,8 @@ def test_aggregation_resolution():
     assert resolve_aggregation("most") == "max"
     assert resolve_aggregation("highest") == "max"
     assert resolve_aggregation("average") == "avg"
+    assert resolve_aggregation("الأكثر") == "max"
+    assert resolve_aggregation("أكبر عدد من") == "max"
     assert resolve_aggregation("nonexistent") is None
 
 
