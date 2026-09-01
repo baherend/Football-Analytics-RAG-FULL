@@ -15,6 +15,7 @@ import streamlit as st
 
 from src.conversation_memory import ConversationMemory
 from src.dataset_catalog import discover_datasets
+from src.example_questions import EXAMPLE_QUESTIONS
 
 # ---------------------------------------------------------------------------
 # Load RAG module
@@ -221,19 +222,10 @@ def render_citations(citations: list[dict]) -> None:
                 st.markdown(f"- {c['label']}{suffix}")
 
 
-# Display chat history
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-        render_citations(msg.get("citations") or [])
-
-# Chat input
-if question := st.chat_input("Ask about the selected competition and season..."):
-    # Show user message
+def submit_question(question: str) -> None:
     with st.chat_message("user"):
         st.markdown(question)
 
-    # Generate answer
     with st.chat_message("assistant"):
         with st.spinner("Retrieving context and generating answer..."):
             answer, citations = rag.answer_question(
@@ -246,7 +238,6 @@ if question := st.chat_input("Ask about the selected competition and season...")
             st.markdown(answer)
             render_citations(citations)
 
-    # Store messages
     st.session_state.messages.append({"role": "user", "content": question})
     st.session_state.messages.append({
         "role": "assistant",
@@ -254,21 +245,44 @@ if question := st.chat_input("Ask about the selected competition and season...")
         "citations": citations,
     })
 
+
+# Display chat history
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+        render_citations(msg.get("citations") or [])
+
+# Chat input
+if question := st.chat_input("Ask about the selected competition and season..."):
+    submit_question(question)
+
 # Example questions (shown when chat is empty)
-if not st.session_state.messages:
+question_set = EXAMPLE_QUESTIONS.get(
+    (selected_entry.competition_id, selected_entry.season_id)
+)
+if not st.session_state.messages and question_set:
     st.markdown("---")
     st.markdown("### 💡 Example Questions")
-    examples = [
-        "Who scored the most goals?",
-        "Which team had the highest xG?",
-        "Which player had the most shots?",
-        "Which team created the most chances?",
-        "Who had the most assists?",
-        "How did the highest-scoring team play?",
-    ]
-    cols = st.columns(2)
-    for i, ex in enumerate(examples):
-        with cols[i % 2]:
-            if st.button(ex, key=f"ex_{i}", use_container_width=True):
-                st.session_state.messages.append({"role": "user", "content": ex})
+    english_col, arabic_col = st.columns(2)
+
+    with english_col:
+        st.markdown("**English**")
+        for i, example in enumerate(question_set["en"]):
+            if st.button(
+                example,
+                key=f"example_en_{i}",
+                use_container_width=True,
+            ):
+                submit_question(example)
+                st.rerun()
+
+    with arabic_col:
+        st.markdown("**العربية**")
+        for i, example in enumerate(question_set["ar"]):
+            if st.button(
+                example,
+                key=f"example_ar_{i}",
+                use_container_width=True,
+            ):
+                submit_question(example)
                 st.rerun()
