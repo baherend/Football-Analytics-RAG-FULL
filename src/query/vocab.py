@@ -677,9 +677,16 @@ def normalize_query_text(text: str) -> str:
         return lowered
 
     decomposed = unicodedata.normalize("NFKD", lowered).replace("ـ", "")
-    return "".join(
-        ch for ch in decomposed if unicodedata.category(ch) != "Mn"
-    )
+    normalized: list[str] = []
+    previous_base_is_arabic = False
+    for ch in decomposed:
+        if unicodedata.category(ch) == "Mn":
+            if not previous_base_is_arabic:
+                normalized.append(ch)
+            continue
+        normalized.append(ch)
+        previous_base_is_arabic = "\u0600" <= ch <= "\u06ff"
+    return unicodedata.normalize("NFC", "".join(normalized))
 
 
 def resolve_metric(name: str) -> str | None:

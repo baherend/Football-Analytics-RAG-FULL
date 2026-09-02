@@ -13,7 +13,7 @@ import pytest
 
 from src.query.query_schema import StructuredQuery, StructuredResult, Filter
 from src.query.resolver import resolve, _load_data
-from src.query.vocab import resolve_metric, resolve_aggregation
+from src.query.vocab import normalize_query_text, resolve_metric, resolve_aggregation
 
 
 @pytest.fixture(scope="module")
@@ -39,6 +39,13 @@ def test_metric_resolution():
     assert resolve_metric("هدفًا") == "goals"
     assert resolve_metric("الأهداف") == "goals"
     assert resolve_metric("nonexistent") is None
+
+
+def test_arabic_normalization_preserves_embedded_latin_name_diacritics():
+    normalized = normalize_query_text("كم هدفًا سجل Kylian Mbappé؟")
+
+    assert "هدفا" in normalized
+    assert "kylian mbappé" in normalized
 
 
 def test_aggregation_resolution():

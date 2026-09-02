@@ -41,24 +41,26 @@ def test_arabic_qualitative_questions_remain_semantic(question: str):
     assert parse_structured_query(question) is None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Arabic named-player numeric parsing is not implemented",
-)
 @pytest.mark.parametrize(
-    "question",
+    ("question", "entity_name"),
     [
-        "كم هدفًا سجل Lionel Messi؟",
-        "كم هدفًا سجل Jamie Vardy؟",
+        ("كم هدفًا سجل Kylian Mbappé؟", "Kylian Mbappé"),
+        ("كم هدفًا سجل Lionel Messi؟", "Lionel Messi"),
+        ("كم اهداف سجل Jamie Vardy؟", "Jamie Vardy"),
+        ("كم عدد أهداف Harry Kane؟", "Harry Kane"),
     ],
 )
-def test_arabic_named_player_numeric_questions_are_structured(question: str):
+def test_arabic_named_player_numeric_questions_are_structured(
+    question: str,
+    entity_name: str,
+):
     route = route_query(question)
 
     assert route.path == "structured"
     assert route.structured_query is not None
     assert route.structured_query.intent == "numeric"
     assert route.structured_query.entity == "player"
+    assert route.structured_query.entity_name == entity_name
     assert route.structured_query.metric == "goals"
 
 

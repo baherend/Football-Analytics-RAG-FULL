@@ -256,6 +256,27 @@ def parse_structured_query(
     opponent_filter = _extract_opponent_filter(query)
     filters = [f for f in [stage_filter, opponent_filter] if f is not None]
 
+    arabic_numeric_patterns = (
+        r"^كم\s+(?P<metric>.+?)\s+(?:سجل|احرز)\s+"
+        r"(?P<player>[a-z\u00c0-\u024f][^؟?]*?)\s*[؟?]?$",
+        r"^كم\s+عدد\s+(?P<metric>.+?)\s+"
+        r"(?P<player>[a-z\u00c0-\u024f][^؟?]*?)\s*[؟?]?$",
+    )
+    for pattern in arabic_numeric_patterns:
+        match = re.search(pattern, query_lower)
+        if not match:
+            continue
+        metric = resolve_metric(match.group("metric"))
+        if metric:
+            return StructuredQuery(
+                intent="numeric",
+                entity="player",
+                metric=metric,
+                aggregation="sum",
+                entity_name=match.group("player").strip().title(),
+                filters=filters,
+            )
+
     arabic_metric = resolve_metric("الاهداف")
     arabic_aggregation = resolve_aggregation("الاكثر")
     if arabic_metric and arabic_aggregation:

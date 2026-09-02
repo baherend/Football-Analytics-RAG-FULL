@@ -195,6 +195,10 @@ STRUCTURED_PATTERNS = [
     r"who\s+(?:has|had)\s+(?:the\s+)?(?:most|fewest)\s+clean\s*sheets?",
     r"what\s+(?:is|was|are|were)\s+(.+?)(?:'s|'s)?\s+([\w\s]+?)(?:\s*$|\s*\?)",
     r"^(.+?)\s+(goals|assists|xg|shots|passes|minutes|tackles|interceptions)$",
+    r"^كم\s+[\u0600-\u06ff\s]+?\s+(?:سجل|احرز)\s+"
+    r"[a-z\u00c0-\u024f][^؟?]*[؟?]?$",
+    r"^كم\s+عدد\s+[\u0600-\u06ff\s]+?\s+"
+    r"[a-z\u00c0-\u024f][^؟?]*[؟?]?$",
     r"(?<!\w)(?:من\s+هو\s+)?(?:ال)?هداف(?!\w)",
     r"من\s+(?:هو\s+)?(?:اللاعب\s+)?(?:الذي\s+)?(?:سجل|احرز)\s+"
     r"(?:اكبر\s+عدد\s+من|(?:ال)?اكثر)\s+(?:ال)?اهداف",

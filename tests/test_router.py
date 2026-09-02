@@ -11,6 +11,7 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
+from src.artifacts import ArtifactPaths
 from src.query.query_schema import StructuredQuery, StructuredResult
 from src.query.resolver import resolve as structured_resolve
 
@@ -134,8 +135,58 @@ def test_arabic_structured_support_preserves_english_superlative_parity():
     assert router.route_query("Who scored the most goals?").path == "structured"
 
 
+def test_arabic_named_player_goal_queries_parse_and_route_structured():
+    cases = [
+        ("كم هدفًا سجل Kylian Mbappé؟", "Kylian Mbappé"),
+        ("كم هدفًا سجل Lionel Messi؟", "Lionel Messi"),
+        ("كم اهداف سجل Jamie Vardy؟", "Jamie Vardy"),
+        ("كم عدد أهداف Harry Kane؟", "Harry Kane"),
+    ]
+
+    for question, expected_name in cases:
+        parsed = router.parse_structured_query(question)
+        route = router.route_query(question)
+
+        assert parsed is not None, question
+        assert parsed.intent == "numeric", question
+        assert parsed.entity == "player", question
+        assert parsed.entity_name == expected_name, question
+        assert parsed.metric == "goals", question
+        assert parsed.aggregation == "sum", question
+        assert route.path == "structured", question
+        assert route.structured_query == parsed, question
+
+
+def test_arabic_named_player_goal_queries_use_existing_entity_resolver():
+    cases = [
+        ("كم هدفًا سجل Kylian Mbappé؟", None, 8),
+        ("كم هدفًا سجل Lionel Messi؟", None, 7),
+        ("كم هدفًا سجل Jamie Vardy؟", ArtifactPaths(2, 27), 24),
+        ("كم عدد أهداف Harry Kane؟", ArtifactPaths(2, 27), 25),
+    ]
+
+    for question, artifact_paths, expected_goals in cases:
+        parsed = router.parse_structured_query(question)
+        assert parsed is not None, question
+        result = structured_resolve(
+            parsed,
+            data_path=(artifact_paths.match_facts if artifact_paths else None),
+        )
+
+        assert result.status == "resolved", question
+        assert result.aggregated_value == expected_goals, question
+
+
 def test_qualitative_arabic_question_remains_semantic():
     question = "كيف لعبت الأرجنتين في المباراة النهائية؟"
+
+    assert router.classify_query(question)[0] == "semantic"
+    assert router.parse_structured_query(question) is None
+    assert router.route_query(question).path == "semantic"
+
+
+def test_qualitative_arabic_named_player_question_remains_semantic():
+    question = "كيف لعب Lionel Messi في المباراة النهائية؟"
 
     assert router.classify_query(question)[0] == "semantic"
     assert router.parse_structured_query(question) is None
