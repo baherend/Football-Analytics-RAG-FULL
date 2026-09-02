@@ -257,9 +257,11 @@ def parse_structured_query(
     filters = [f for f in [stage_filter, opponent_filter] if f is not None]
 
     arabic_numeric_patterns = (
-        r"^كم\s+(?P<metric>.+?)\s+(?:سجل|احرز)\s+"
+        r"^كم\s+(?P<metric>.+?)\s+(?:سجل|احرز|صنع|سدد)\s+"
         r"(?P<player>[a-z\u00c0-\u024f][^؟?]*?)\s*[؟?]?$",
         r"^كم\s+عدد\s+(?P<metric>.+?)\s+"
+        r"(?P<player>[a-z\u00c0-\u024f][^؟?]*?)\s*[؟?]?$",
+        r"^كم\s+بلغ\s+(?P<metric>.+?)\s+"
         r"(?P<player>[a-z\u00c0-\u024f][^؟?]*?)\s*[؟?]?$",
     )
     for pattern in arabic_numeric_patterns:
@@ -274,6 +276,29 @@ def parse_structured_query(
                 metric=metric,
                 aggregation="sum",
                 entity_name=match.group("player").strip().title(),
+                filters=filters,
+            )
+
+    arabic_superlative = re.search(
+        r"^من\s+(?P<action>لديه|صاحب|صنع|سدد)\s+"
+        r"(?P<aggregation>اكبر\s+عدد(?:\s+من)?|(?:ال)?اكثر|(?:ال)?اعلى)\s+"
+        r"(?P<metric>.+?)\s*[؟?]?$",
+        query_lower,
+    )
+    if arabic_superlative:
+        action = arabic_superlative.group("action")
+        phrase_metric = resolve_metric(arabic_superlative.group("metric"))
+        aggregation = resolve_aggregation(arabic_superlative.group("aggregation"))
+        metric = phrase_metric
+        if action == "صنع" and phrase_metric == "goals":
+            metric = "assists"
+        if metric and aggregation:
+            return StructuredQuery(
+                intent="superlative",
+                entity="player",
+                metric=metric,
+                aggregation=aggregation,
+                limit=1,
                 filters=filters,
             )
 

@@ -64,18 +64,13 @@ def test_arabic_named_player_numeric_questions_are_structured(
     assert route.structured_query.metric == "goals"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Arabic non-goal superlatives lack complete metric/aggregation "
-        "normalization and parser patterns"
-    ),
-)
 @pytest.mark.parametrize(
     ("question", "entity", "metric"),
     [
+        ("من صنع أكبر عدد من الأهداف؟", "player", "assists"),
         ("من لديه أكبر عدد من التمريرات الحاسمة؟", "player", "assists"),
-        ("ما الفريق صاحب أعلى xG؟", "team", "xg"),
+        ("من سدد أكبر عدد من التسديدات؟", "player", "shots"),
+        ("من لديه أعلى xG؟", "player", "xg"),
     ],
 )
 def test_arabic_non_goal_superlatives_are_structured(
@@ -91,6 +86,65 @@ def test_arabic_non_goal_superlatives_are_structured(
     assert route.structured_query.entity == entity
     assert route.structured_query.metric == metric
     assert route.structured_query.aggregation == "max"
+
+
+@pytest.mark.parametrize(
+    ("question", "entity_name", "metric"),
+    [
+        ("كم تمريرة حاسمة صنع Lionel Messi؟", "Lionel Messi", "assists"),
+        ("كم تمريرةً حاسمةً صنع Lionel Messi؟", "Lionel Messi", "assists"),
+        ("كم تسديدة سدد Kylian Mbappé؟", "Kylian Mbappé", "shots"),
+        ("كم بلغ xG Lionel Messi؟", "Lionel Messi", "xg"),
+    ],
+)
+def test_arabic_non_goal_named_player_questions_are_structured(
+    question: str,
+    entity_name: str,
+    metric: str,
+):
+    route = route_query(question)
+
+    assert route.path == "structured"
+    assert route.structured_query is not None
+    assert route.structured_query.intent == "numeric"
+    assert route.structured_query.entity == "player"
+    assert route.structured_query.entity_name == entity_name
+    assert route.structured_query.metric == metric
+    assert route.structured_query.aggregation == "sum"
+
+
+@pytest.mark.parametrize(
+    ("question", "metric"),
+    [
+        ("كم تسديدة صنع Lionel Messi؟", "shots"),
+        ("كم تمريرة حاسمة سدد Lionel Messi؟", "assists"),
+        ("من صنع أكبر عدد من التسديدات؟", "shots"),
+        ("من سدد أكبر عدد من التمريرات الحاسمة؟", "assists"),
+    ],
+)
+def test_arabic_explicit_metric_phrase_wins_over_mismatched_verb(
+    question: str,
+    metric: str,
+):
+    route = route_query(question)
+
+    assert route.path == "structured"
+    assert route.structured_query is not None
+    assert route.structured_query.metric == metric
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "ما الفريق صاحب أعلى xG؟",
+        "كم بلغ xG فريق Leicester City؟",
+    ],
+)
+def test_unsupported_arabic_team_xg_questions_remain_semantic(question: str):
+    route = route_query(question)
+
+    assert route.path == "semantic"
+    assert parse_structured_query(question) is None
 
 
 @pytest.mark.xfail(

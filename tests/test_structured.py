@@ -41,6 +41,25 @@ def test_metric_resolution():
     assert resolve_metric("nonexistent") is None
 
 
+@pytest.mark.parametrize(
+    ("alias", "metric"),
+    [
+        ("تمريرات حاسمة", "assists"),
+        ("تمريره حاسمه", "assists"),
+        ("تسديدة", "shots"),
+        ("تسديدات", "shots"),
+        ("الأهداف المتوقعة", "xg"),
+    ],
+)
+def test_arabic_non_goal_metric_resolution(alias: str, metric: str):
+    assert resolve_metric(alias) == metric
+
+
+@pytest.mark.parametrize("verb", ["صنع", "سدد"])
+def test_arabic_action_verbs_are_not_metric_aliases(verb: str):
+    assert resolve_metric(verb) is None
+
+
 def test_arabic_normalization_preserves_embedded_latin_name_diacritics():
     normalized = normalize_query_text("كم هدفًا سجل Kylian Mbappé؟")
 

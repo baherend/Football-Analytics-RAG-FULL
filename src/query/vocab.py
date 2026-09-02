@@ -530,15 +530,38 @@ METRIC_SYNONYMS = {
     # Assists
     "assists": "assists",
     "assist": "assists",
+    "تمريره حاسمه": "assists",
+    "تمريرات حاسمه": "assists",
+    "التمريره الحاسمه": "assists",
+    "التمريرات الحاسمه": "assists",
+    "تمريره حاسمة": "assists",
+    "تمريرة حاسمه": "assists",
+    "تمريرة حاسمة": "assists",
+    "تمريرات حاسمة": "assists",
+    "التمريره الحاسمة": "assists",
+    "التمريرة الحاسمه": "assists",
+    "التمريرة الحاسمة": "assists",
+    "التمريرات الحاسمة": "assists",
     # xG
     "xg": "xg",
     "expected goals": "xg",
     "expected_goals": "xg",
     "xG": "xg",
+    "هدف متوقع": "xg",
+    "اهداف متوقعه": "xg",
+    "الاهداف المتوقعه": "xg",
+    "اهداف متوقعة": "xg",
+    "الاهداف المتوقعة": "xg",
     # Shots
     "shots": "shots",
     "shot": "shots",
     "attempts": "shots",
+    "تسديده": "shots",
+    "تسديدات": "shots",
+    "التسديده": "shots",
+    "التسديدات": "shots",
+    "تسديدة": "shots",
+    "التسديدة": "shots",
     # Passes
     "passes": "passes_attempted",
     "pass": "passes_attempted",
@@ -640,6 +663,8 @@ AGGREGATION_SYNONYMS = {
     "الاكثر": "max",
     "اكبر عدد": "max",
     "اكبر عدد من": "max",
+    "اعلى": "max",
+    "الاعلى": "max",
 }
 
 STAGE_SYNONYMS = {

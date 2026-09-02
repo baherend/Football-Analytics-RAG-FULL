@@ -11,6 +11,8 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from src.artifacts import ArtifactPaths
 from src.query.query_schema import StructuredQuery, StructuredResult
 from src.query.resolver import resolve as structured_resolve
@@ -175,6 +177,29 @@ def test_arabic_named_player_goal_queries_use_existing_entity_resolver():
 
         assert result.status == "resolved", question
         assert result.aggregated_value == expected_goals, question
+
+
+def test_arabic_non_goal_named_player_queries_use_existing_entity_resolver():
+    cases = [
+        ("كم تمريرة حاسمة صنع Lionel Messi؟", None, "assists", 3),
+        ("كم تسديدة سدد Kylian Mbappé؟", None, "shots", 31),
+        ("كم بلغ xG Lionel Messi؟", None, "xg", 6.031649225),
+        ("كم تمريرة حاسمة صنع Jamie Vardy؟", ArtifactPaths(2, 27), "assists", 5),
+        ("كم تسديدة سدد Harry Kane؟", ArtifactPaths(2, 27), "shots", 158),
+        ("كم بلغ xG Jamie Vardy؟", ArtifactPaths(2, 27), "xg", 22.298685118999998),
+    ]
+
+    for question, artifact_paths, expected_metric, expected_value in cases:
+        parsed = router.parse_structured_query(question)
+        assert parsed is not None, question
+        assert parsed.metric == expected_metric, question
+        result = structured_resolve(
+            parsed,
+            data_path=(artifact_paths.match_facts if artifact_paths else None),
+        )
+
+        assert result.status == "resolved", question
+        assert result.aggregated_value == pytest.approx(expected_value), question
 
 
 def test_qualitative_arabic_question_remains_semantic():
