@@ -1,15 +1,21 @@
-# FIFA World Cup 2022 — RAG Analytics System
+# ⚽ Football Analytics RAG System
 
-A Retrieval-Augmented Generation (RAG) system over StatsBomb open data for the FIFA World Cup 2022. Answers natural-language questions about matches, players, and teams using hybrid retrieval (BM25 + dense embeddings + RRF fusion).
+A production-oriented **Retrieval-Augmented Generation (RAG)** system for football analytics built on StatsBomb data. The project combines structured football facts, hybrid retrieval, multilingual and Arabic query support, competition portability, answerability checks, and ground-truth evaluation.
 
-## Features
+> **Current scope:** FIFA World Cup 2022 baseline with portability support for additional competitions, including EPL 2015/16.
 
-- **Hybrid Retrieval** — BM25 lexical search + sentence embeddings with Reciprocal Rank Fusion
-- **Structured Queries** — Numeric/superlative questions answered directly from structured data
-- **Semantic Queries** — Descriptive questions answered via vector search
-- **Query Router** — Automatically routes questions to the best retrieval path
-- **2,835 documents** — Match summaries, key events, player stats, team analysis
-- **64 matches** — Complete FIFA World Cup 2022 coverage
+## 🚀 Key Features
+
+- **Competition Portability** — Dataset-aware architecture with competition and season-specific artifacts.
+- **Hybrid Retrieval** — BM25 lexical retrieval + dense embeddings + Reciprocal Rank Fusion (RRF).
+- **Structured Querying** — Deterministic handling of numeric, comparison, ranking, player, team, and match questions.
+- **Query Routing** — Automatically selects the appropriate structured or semantic retrieval path.
+- **Multilingual & Arabic Support** — Retrieval safeguards and Arabic-aware tokenization for cross-language football queries.
+- **Evidence-Aware Context Selection** — Selects relevant chunks while reducing duplicate or weak evidence.
+- **Answerability Checks** — Validates whether retrieved evidence is sufficient before generation.
+- **Ground-Truth Evaluation** — Evaluates BM25, dense, and hybrid retrieval using reproducible test cases and ranking metrics.
+- **StatsBomb Integration** — Structured extraction and document generation directly from football event data.
+- **CLI + Streamlit Interface** — Supports both command-line analysis and an interactive web application.
 
 ## Quick Start
 
