@@ -16,6 +16,7 @@ import streamlit as st
 from src.conversation_memory import ConversationMemory
 from src.dataset_catalog import discover_datasets
 from src.example_questions import EXAMPLE_QUESTIONS
+from src.generation.prompt import contains_arabic
 
 # ---------------------------------------------------------------------------
 # Load RAG module
@@ -97,6 +98,26 @@ st.markdown("""
     .stButton > button:hover {
         background-color: #2D3748;
         border-color: #00C853;
+    }
+    .rtl-message-marker, .rtl-example-marker {
+        display: none;
+    }
+    [data-testid="stChatMessage"]:has(.rtl-message-marker)
+    [data-testid="stMarkdownContainer"] {
+        direction: rtl;
+        text-align: right;
+        unicode-bidi: isolate;
+    }
+    [data-testid="stColumn"]:has(.rtl-example-marker) {
+        direction: rtl;
+        text-align: right;
+        unicode-bidi: isolate;
+    }
+    [data-testid="stColumn"]:has(.rtl-example-marker) .stButton > button {
+        direction: rtl;
+        text-align: right;
+        unicode-bidi: isolate;
+        justify-content: flex-start;
     }
     [data-testid="stExpander"] {
         background-color: #1A2332;
@@ -222,9 +243,18 @@ def render_citations(citations: list[dict]) -> None:
                 st.markdown(f"- {c['label']}{suffix}")
 
 
+def render_chat_content(content: str) -> None:
+    if contains_arabic(content):
+        st.markdown(
+            '<span class="rtl-message-marker" aria-hidden="true"></span>',
+            unsafe_allow_html=True,
+        )
+    st.markdown(content)
+
+
 def submit_question(question: str) -> None:
     with st.chat_message("user"):
-        st.markdown(question)
+        render_chat_content(question)
 
     with st.chat_message("assistant"):
         with st.spinner("Retrieving context and generating answer..."):
@@ -235,7 +265,7 @@ def submit_question(question: str) -> None:
                 artifact_paths=artifact_paths,
                 memory=st.session_state.memory,
             )
-            st.markdown(answer)
+            render_chat_content(answer)
             render_citations(citations)
 
     st.session_state.messages.append({"role": "user", "content": question})
@@ -249,7 +279,7 @@ def submit_question(question: str) -> None:
 # Display chat history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+        render_chat_content(msg["content"])
         render_citations(msg.get("citations") or [])
 
 # Chat input
@@ -277,6 +307,10 @@ if not st.session_state.messages and question_set:
                 st.rerun()
 
     with arabic_col:
+        st.markdown(
+            '<span class="rtl-example-marker" aria-hidden="true"></span>',
+            unsafe_allow_html=True,
+        )
         st.markdown("**العربية**")
         for i, example in enumerate(question_set["ar"]):
             if st.button(

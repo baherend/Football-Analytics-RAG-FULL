@@ -72,6 +72,62 @@ def test_streamlit_renders_english_left_and_arabic_right():
     assert "with arabic_col:" in source
 
 
+def test_streamlit_scopes_rtl_to_arabic_chat_and_example_markers():
+    source = _streamlit_source()
+
+    assert '[data-testid="stChatMessage"]:has(.rtl-message-marker)' in source
+    assert '[data-testid="stColumn"]:has(.rtl-example-marker)' in source
+    assert "direction: rtl" in source
+    assert "text-align: right" in source
+    assert "unicode-bidi: isolate" in source
+    assert '.rtl-message-marker, .rtl-example-marker' in source
+
+
+def test_streamlit_chat_renderer_marks_only_arabic_text():
+    tree = ast.parse(_streamlit_source())
+    renderer = _function(tree, "render_chat_content")
+
+    arabic_checks = [
+        call
+        for call in ast.walk(renderer)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == "contains_arabic"
+    ]
+    assert len(arabic_checks) == 1
+
+    markdown_calls = [
+        call
+        for call in ast.walk(renderer)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "markdown"
+    ]
+    assert any(
+        call.args
+        and isinstance(call.args[0], ast.Name)
+        and call.args[0].id == "content"
+        and not call.keywords
+        for call in markdown_calls
+    )
+
+    renderer_calls = _calls_named(tree, "render_chat_content")
+    assert len(renderer_calls) == 3
+
+
+def test_mixed_script_examples_remain_unmodified():
+    from src.example_questions import EXAMPLE_QUESTIONS
+    from src.generation.prompt import contains_arabic
+
+    wc_arabic = EXAMPLE_QUESTIONS[(43, 106)]["ar"]
+    epl_arabic = EXAMPLE_QUESTIONS[(2, 27)]["ar"]
+
+    assert "كيف لعبت Argentina في المباراة النهائية؟" in wc_arabic
+    assert "كيف لعب Leicester City خلال الموسم؟" in epl_arabic
+    assert all(contains_arabic(question) for question in wc_arabic + epl_arabic)
+    assert contains_arabic("How did Argentina play in the final?") is False
+
+
 def test_example_button_uses_same_submission_pipeline_as_chat_input():
     tree = ast.parse(_streamlit_source())
     submit = _function(tree, "submit_question")
