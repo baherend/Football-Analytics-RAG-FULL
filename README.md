@@ -323,4 +323,6 @@ Current development branch: `competition-portability`.
 
 ## License
 
-This project is for educational purposes. StatsBomb data is subject to their open data license.
+The source code in this repository is licensed under the **MIT License**. See [LICENSE](./LICENSE).
+
+StatsBomb open data is **not covered by this repository's MIT License** and remains subject to StatsBomb's own open-data terms and attribution requirements.
