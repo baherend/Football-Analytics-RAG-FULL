@@ -318,6 +318,87 @@ def test_comparison_routing_hybrid():
         assert route.path == "hybrid", f"route_query({question!r}).path = {route.path}, expected hybrid"
 
 
+def test_arabic_comparison_understanding_preserves_entities_metric_and_order():
+    cases = [
+        (
+            "من سجل أهدافًا أكثر Lionel Messi أم Kylian Mbappé؟",
+            ["Lionel Messi", "Kylian Mbappé"],
+            "goals",
+        ),
+        (
+            "من لديه xG أعلى Lionel Messi أم Kylian Mbappé؟",
+            ["Lionel Messi", "Kylian Mbappé"],
+            "xg",
+        ),
+        (
+            "من سدد تسديدات أكثر Harry Kane أم Jamie Vardy؟",
+            ["Harry Kane", "Jamie Vardy"],
+            "shots",
+        ),
+        (
+            "من صنع تمريرات حاسمة أكثر Lionel Messi أم Kylian Mbappé؟",
+            ["Lionel Messi", "Kylian Mbappé"],
+            "assists",
+        ),
+        (
+            "من سجل اهدافا اكثر، Kylian Mbappé ام Lionel Messi?",
+            ["Kylian Mbappé", "Lionel Messi"],
+            "goals",
+        ),
+    ]
+
+    for question, expected_entities, expected_metric in cases:
+        assert router._detect_comparison(question) == expected_entities, question
+        assert router._detect_comparison_metric(question) == expected_metric, question
+        assert router.route_query(question).path == "hybrid", question
+
+
+def test_arabic_comparison_executes_existing_structured_path(monkeypatch):
+    monkeypatch.setattr(router, "hybrid_search", lambda *args, **kwargs: [])
+    cases = [
+        (
+            "من سجل أهدافًا أكثر Lionel Messi أم Kylian Mbappé؟",
+            None,
+            "goals",
+            {"Lionel Messi": 7, "Kylian Mbappé": 8},
+        ),
+        (
+            "من صنع تمريرات حاسمة أكثر Lionel Messi أم Kylian Mbappé؟",
+            None,
+            "assists",
+            {"Lionel Messi": 3, "Kylian Mbappé": 2},
+        ),
+        (
+            "من لديه xG أعلى Lionel Messi أم Kylian Mbappé؟",
+            None,
+            "xg",
+            {"Lionel Messi": 6.031649225, "Kylian Mbappé": 4.233251877},
+        ),
+        (
+            "من سدد تسديدات أكثر Harry Kane أم Jamie Vardy؟",
+            ArtifactPaths(2, 27),
+            "shots",
+            {"Harry Kane": 158, "Jamie Vardy": 118},
+        ),
+    ]
+
+    for question, artifact_paths, expected_metric, expected_values in cases:
+        route = router.route_query(question, artifact_paths=artifact_paths)
+        result = router.execute_route(
+            route,
+            semantic_k=0,
+            original_query=question,
+            artifact_paths=artifact_paths,
+        )
+        comparison = result.structured_result
+
+        assert isinstance(comparison, router.ComparisonResult), question
+        assert comparison.status == "resolved", question
+        assert comparison.metric == expected_metric, question
+        actual_values = {item.entity_name: item.value for item in comparison.values}
+        assert actual_values == pytest.approx(expected_values), question
+
+
 def test_comparison_entity_extraction_who_scored_more_phrasing():
     """
     Comparison Engine audit (Step 1): _detect_comparison() only recognizes

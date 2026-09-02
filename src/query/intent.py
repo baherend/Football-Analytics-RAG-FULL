@@ -69,9 +69,30 @@ COMPARISON_PATTERNS = [
     r"who\s+\w+\s+more\s+[\w\s]+?,\s*(.+?)\s+or\s+(.+?)(?:\s*$|\s*\?)",
 ]
 
+_ARABIC_COMPARISON_PATTERN = re.compile(
+    r"^من\s+(?:سجل|لديه|سدد|صنع)\s+"
+    r"(?P<metric>[\u0600-\u06ffa-z\s]{1,60}?)\s+"
+    r"(?:اكثر|اعلى)\s*[,،]?\s*"
+    r"(?P<entity_a>[a-z\u00c0-\u024f][a-z\u00c0-\u024f .\-'’]{0,79}?)"
+    r"\s*[,،]?\s+ام\s+"
+    r"(?P<entity_b>[a-z\u00c0-\u024f][a-z\u00c0-\u024f .\-'’]{0,79}?)"
+    r"\s*[؟?]?$"
+)
+
+
+def _match_arabic_comparison(query: str) -> re.Match[str] | None:
+    return _ARABIC_COMPARISON_PATTERN.fullmatch(normalize_query_text(query))
+
 
 def _detect_comparison(query: str) -> list[str]:
     """Detect if a query is comparing two entities. Returns entity names."""
+    arabic_match = _match_arabic_comparison(query)
+    if arabic_match:
+        return [
+            arabic_match.group("entity_a").strip().title(),
+            arabic_match.group("entity_b").strip().title(),
+        ]
+
     query_lower = query.lower().strip()
     for pattern in COMPARISON_PATTERNS:
         match = re.search(pattern, query_lower)
@@ -116,6 +137,11 @@ def _detect_comparison_metric(query: str) -> str:
       producing status="empty" for that entity -- it must never be
       silently swapped for "goals".
     """
+    arabic_match = _match_arabic_comparison(query)
+    if arabic_match:
+        phrase = arabic_match.group("metric").strip()
+        return resolve_metric(phrase) or phrase
+
     query_lower = query.lower()
     match = (
         re.search(r"who\s+\w+\s+more\s+([\w\s]+?),", query_lower)

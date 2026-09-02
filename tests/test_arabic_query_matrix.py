@@ -160,16 +160,38 @@ def test_arabic_compositional_dependency_routes_hybrid():
     assert route.dependency_query.metric == "goals"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Arabic comparison routing is not implemented",
+@pytest.mark.parametrize(
+    ("question", "metric"),
+    [
+        ("من سجل أهدافًا أكثر Lionel Messi أم Kylian Mbappé؟", "goals"),
+        ("من لديه xG أعلى Lionel Messi أم Kylian Mbappé؟", "xg"),
+        ("من سدد تسديدات أكثر Harry Kane أم Jamie Vardy؟", "shots"),
+        ("من صنع تمريرات حاسمة أكثر Lionel Messi أم Kylian Mbappé؟", "assists"),
+    ],
 )
+def test_arabic_comparisons_route_hybrid(question: str, metric: str):
+    route = route_query(question)
+
+    assert route.path == "hybrid"
+    assert route.semantic_query == question
+
+
 @pytest.mark.parametrize(
     "question",
     [
-        "قارن بين Lionel Messi و Kylian Mbappe في الأهداف.",
-        "قارن بين Harry Kane و Jamie Vardy في الأهداف.",
+        "من سجل أهدافًا أكثر Lionel Messi؟",
+        "من لديه xG أعلى Kylian Mbappé؟",
     ],
 )
-def test_arabic_comparisons_route_hybrid(question: str):
-    assert route_query(question).path == "hybrid"
+def test_malformed_arabic_one_entity_comparisons_are_not_hybrid(question: str):
+    assert route_query(question).path != "hybrid"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="Arabic imperative comparison phrasing is not implemented",
+)
+def test_arabic_imperative_comparison_routes_hybrid():
+    assert route_query(
+        "قارن بين Lionel Messi و Kylian Mbappe في الأهداف."
+    ).path == "hybrid"

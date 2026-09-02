@@ -525,6 +525,7 @@ METRIC_SYNONYMS = {
     "هدف": "goals",
     "هدفا": "goals",
     "اهداف": "goals",
+    "اهدافا": "goals",
     "الهدف": "goals",
     "الاهداف": "goals",
     # Assists
