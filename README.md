@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./assets/football-rag-banner.png" alt="Football Analytics RAG System Banner" width="100%" />
+</p>
+
 # ⚽ Football Analytics RAG System
 
 A production-oriented **Retrieval-Augmented Generation (RAG)** system for football analytics built on StatsBomb data. The project combines structured football facts, hybrid retrieval, multilingual and Arabic query support, competition portability, answerability checks, and ground-truth evaluation.
